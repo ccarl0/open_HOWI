@@ -1,3 +1,4 @@
+# SPDX-License-Identifier: GPL-3.0-or-later
 """Wing panel geometry: root/tip sections and their projection onto the towers.
 
 Wing coordinates: x points aft (leading edge at x = 0 on the root), y points up,

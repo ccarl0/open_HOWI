@@ -1,5 +1,5 @@
 [build-system]
-requires = ["setuptools>=69"]
+requires = ["setuptools>=77"]
 build-backend = "setuptools.build_meta"
 
 [project]
@@ -7,6 +7,8 @@ name = "open-howi"
 dynamic = ["version"]
 description = "Open-source CAM and machine control for 4-axis hot-wire foam cutters"
 readme = "README.md"
+license = "GPL-3.0-or-later"
+license-files = ["LICENSE"]
 requires-python = ">=3.11"
 dependencies = []
 keywords = ["cnc", "hot wire", "foam cutter", "g-code", "grbl", "rc", "airfoil"]

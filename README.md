@@ -173,3 +173,9 @@ ruff check src tests && ruff format --check src tests
 The core (`airfoil`, `geometry`, `wing`, `toolpath`, `gcode`) is pure Python with no
 dependencies. `sender` needs pyserial only when talking to real hardware; its tests use a
 simulated GRBL.
+
+## License
+
+open_HOWI is free software: you can redistribute it and/or modify it under the terms of the
+[GNU General Public License](LICENSE) as published by the Free Software Foundation, either
+version 3 of the License, or (at your option) any later version.

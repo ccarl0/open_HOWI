@@ -1,3 +1,4 @@
+# SPDX-License-Identifier: GPL-3.0-or-later
 """Load a cutting job from a TOML file (see ``examples/``)."""
 
 from __future__ import annotations

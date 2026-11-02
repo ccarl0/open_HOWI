@@ -1,3 +1,4 @@
+# SPDX-License-Identifier: GPL-3.0-or-later
 """Turn part geometry into a sequence of synchronized XY/UV carriage moves."""
 
 from __future__ import annotations

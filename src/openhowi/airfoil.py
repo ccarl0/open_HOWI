@@ -1,3 +1,4 @@
+# SPDX-License-Identifier: GPL-3.0-or-later
 """Airfoil loading (Selig / Lednicer ``.dat`` files) and NACA 4-digit generation.
 
 Internally an airfoil is always stored in Selig order: trailing edge, along the

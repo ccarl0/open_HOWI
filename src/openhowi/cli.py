@@ -1,3 +1,4 @@
+# SPDX-License-Identifier: GPL-3.0-or-later
 """Command line interface: ``openhowi wing``, ``openhowi send`` and ``openhowi naca``."""
 
 from __future__ import annotations

@@ -1,3 +1,4 @@
+# SPDX-License-Identifier: GPL-3.0-or-later
 """Dependency-free 2D polyline helpers used by the CAM code."""
 
 from __future__ import annotations

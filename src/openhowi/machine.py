@@ -1,3 +1,4 @@
+# SPDX-License-Identifier: GPL-3.0-or-later
 """Description of a 4-axis hot-wire machine."""
 
 from __future__ import annotations

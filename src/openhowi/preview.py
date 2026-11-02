@@ -1,3 +1,4 @@
+# SPDX-License-Identifier: GPL-3.0-or-later
 """SVG preview of the two carriage paths."""
 
 from __future__ import annotations

@@ -1,3 +1,4 @@
+# SPDX-License-Identifier: GPL-3.0-or-later
 """G-code output for 4-axis hot-wire toolpaths.
 
 Each segment moves both carriages, usually by different distances. The feed is

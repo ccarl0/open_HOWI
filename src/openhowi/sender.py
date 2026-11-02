@@ -1,3 +1,4 @@
+# SPDX-License-Identifier: GPL-3.0-or-later
 """Stream G-code to a GRBL-compatible controller over USB serial.
 
 The controller (e.g. an Arduino Mega running a 4-axis GRBL build) generates
