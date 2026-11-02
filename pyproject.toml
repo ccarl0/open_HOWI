@@ -1,0 +1,36 @@
+[build-system]
+requires = ["setuptools>=69"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "open-howi"
+dynamic = ["version"]
+description = "Open-source CAM and machine control for 4-axis hot-wire foam cutters"
+readme = "README.md"
+requires-python = ">=3.11"
+dependencies = []
+keywords = ["cnc", "hot wire", "foam cutter", "g-code", "grbl", "rc", "airfoil"]
+classifiers = [
+    "Programming Language :: Python :: 3",
+    "Topic :: Scientific/Engineering",
+    "Intended Audience :: Manufacturing",
+]
+
+[project.optional-dependencies]
+serial = ["pyserial>=3.5"]
+dev = ["pytest>=8"]
+
+[project.scripts]
+openhowi = "openhowi.cli:main"
+
+[tool.setuptools.dynamic]
+version = { attr = "openhowi.__version__" }
+
+[tool.setuptools.packages.find]
+where = ["src"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+
+[tool.ruff]
+line-length = 120
