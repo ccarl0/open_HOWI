@@ -7,7 +7,7 @@ from dataclasses import dataclass
 
 from .geometry import Point
 from .machine import Machine
-from .wing import WingPanel, project_to_towers
+from .wing import WingPanel, place_section, project_to_towers
 
 
 class PlacementError(ValueError):
@@ -24,6 +24,8 @@ class Move:
     uv: Point
     cutting: bool
     """True when the wire is in foam (cut feed), False for moves through air."""
+    feed_scale: float = 1.0
+    """Multiplier on the cut or travel feed (used by calibration cuts)."""
 
 
 @dataclass(frozen=True)
@@ -31,6 +33,9 @@ class Toolpath:
     moves: tuple[Move, ...]
     start: tuple[Point, Point] = ((0.0, 0.0), (0.0, 0.0))
     """Carriage positions the job starts from (the machine origin)."""
+    foam_span: tuple[float, float] | None = None
+    """Span positions (from the XY carriage) of the ends of the foam. While cutting, the
+    wire moves at the cut feed at whichever end moves faster. ``None``: limit the carriages."""
 
     def extents(self) -> dict[str, tuple[float, float, float, float]]:
         """``{"XY": (xmin, ymin, xmax, ymax), "UV": (...)}`` including the start point."""
@@ -65,25 +70,21 @@ class Placement:
             raise ValueError("x_margin must be > 0 so the wire can enter from outside the foam")
 
 
-def check_limits(toolpath: Toolpath, machine: Machine, tol: float = 1e-6) -> None:
-    problems = []
-    for name, (xmin, ymin, xmax, ymax) in toolpath.extents().items():
-        if xmin < -tol or xmax > machine.x_travel + tol:
-            problems.append(f"{name} horizontal range {xmin:.1f}..{xmax:.1f} mm exceeds 0..{machine.x_travel:g} mm")
-        if ymin < -tol or ymax > machine.y_travel + tol:
-            problems.append(f"{name} vertical range {ymin:.1f}..{ymax:.1f} mm exceeds 0..{machine.y_travel:g} mm")
-    if problems:
-        raise MachineLimitError("; ".join(problems))
+@dataclass(frozen=True)
+class WingLayout:
+    """A wing panel placed in machine coordinates (X towards the foam, Y up)."""
+
+    z_root: float
+    z_tip: float
+    root_shape: list[Point]
+    """Finished root section (no kerf), for display."""
+    tip_shape: list[Point]
+    xy: list[Point]
+    """Kerf-compensated path of the XY carriage."""
+    uv: list[Point]
 
 
-def build_wing_toolpath(wing: WingPanel, machine: Machine, placement: Placement) -> Toolpath:
-    """Toolpath for one wing core, trailing edge facing the machine origin.
-
-    The wire rises at X=0 (outside the foam) to the trailing-edge height,
-    cuts in to the trailing edge, goes over the upper surface to the leading
-    edge, back along the lower surface, out the entry slot, and down to the
-    origin.
-    """
+def layout_wing(wing: WingPanel, machine: Machine, placement: Placement) -> WingLayout:
     d = machine.tower_distance
     if placement.root_side == "xy":
         z_root = placement.root_offset
@@ -102,17 +103,53 @@ def build_wing_toolpath(wing: WingPanel, machine: Machine, placement: Placement)
     # Mirror X so the trailing edge faces the origin and the wire enters from behind it.
     x_back = max(p[0] for p in xy + uv)
 
-    def to_machine(p: Point) -> Point:
-        return (placement.x_margin + (x_back - p[0]), placement.y_offset + p[1])
+    def to_machine(points: list[Point]) -> list[Point]:
+        return [(placement.x_margin + (x_back - x), placement.y_offset + y) for x, y in points]
 
-    xy = [to_machine(p) for p in xy]
-    uv = [to_machine(p) for p in uv]
+    assert wing.tip_airfoil is not None and wing.tip_chord is not None
+    root_shape = place_section(wing.root_airfoil, wing.root_chord, wing.points_per_surface)
+    tip_shape = place_section(
+        wing.tip_airfoil,
+        wing.tip_chord,
+        wing.points_per_surface,
+        x_le=wing.sweep,
+        y_le=wing.tip_offset_y,
+        twist_deg=wing.washout,
+        pivot=wing.washout_pivot,
+    )
+    return WingLayout(z_root, z_tip, to_machine(root_shape), to_machine(tip_shape), to_machine(xy), to_machine(uv))
 
+
+def check_limits(toolpath: Toolpath, machine: Machine, tol: float = 1e-6) -> None:
+    problems = []
+    for name, (xmin, ymin, xmax, ymax) in toolpath.extents().items():
+        if xmin < -tol or xmax > machine.x_travel + tol:
+            problems.append(f"{name} horizontal range {xmin:.1f}..{xmax:.1f} mm exceeds 0..{machine.x_travel:g} mm")
+        if ymin < -tol or ymax > machine.y_travel + tol:
+            problems.append(f"{name} vertical range {ymin:.1f}..{ymax:.1f} mm exceeds 0..{machine.y_travel:g} mm")
+    if problems:
+        raise MachineLimitError("; ".join(problems))
+
+
+def wing_toolpath(layout: WingLayout, machine: Machine) -> Toolpath:
+    """Toolpath for one wing core, trailing edge facing the machine origin.
+
+    The wire rises at X=0 (outside the foam) to the trailing-edge height,
+    cuts in to the trailing edge, goes over the upper surface to the leading
+    edge, back along the lower surface, out the entry slot, and down to the
+    origin.
+    """
+    xy, uv = layout.xy, layout.uv
     moves = [Move((0.0, xy[0][1]), (0.0, uv[0][1]), cutting=False)]
     moves += [Move(a, b, cutting=True) for a, b in zip(xy, uv)]
     moves.append(Move((0.0, xy[-1][1]), (0.0, uv[-1][1]), cutting=True))
     moves.append(Move((0.0, 0.0), (0.0, 0.0), cutting=False))
 
-    toolpath = Toolpath(tuple(moves))
+    span = (min(layout.z_root, layout.z_tip), max(layout.z_root, layout.z_tip))
+    toolpath = Toolpath(tuple(moves), foam_span=span)
     check_limits(toolpath, machine)
     return toolpath
+
+
+def build_wing_toolpath(wing: WingPanel, machine: Machine, placement: Placement) -> Toolpath:
+    return wing_toolpath(layout_wing(wing, machine, placement), machine)

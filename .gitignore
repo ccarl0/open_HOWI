@@ -6,6 +6,8 @@ dist/
 .venv/
 venv/
 .pytest_cache/
-*.gcode
-*.svg
-!docs/**/*.svg
+.ruff_cache/
+# Output of the command line tools when run from the repository root
+/*.gcode
+/*.svg
+/*.howi.json

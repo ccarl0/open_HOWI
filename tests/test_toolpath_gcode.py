@@ -133,3 +133,9 @@ def test_full_wing_gcode_stays_in_limits():
         assert 0 <= m["x"] <= 500 and 0 <= m["u"] <= 500
         assert 0 <= m["y"] <= 250 and 0 <= m["v"] <= 250
         assert m["f"] > 0
+
+
+def test_comments_are_plain_ascii():
+    gcode = generate_gcode(Toolpath((Move((1, 2), (3, 4), True),)), Machine(), ["EPS 20 kg/m³; white"])
+    assert "(EPS 20 kg/m3, white)" in gcode
+    gcode.encode("ascii")

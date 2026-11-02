@@ -1,9 +1,12 @@
 # SPDX-License-Identifier: GPL-3.0-or-later
 """G-code output for 4-axis hot-wire toolpaths.
 
-Each segment moves both carriages, usually by different distances. The feed is
-set so that the carriage travelling farther moves at the requested speed and
-both arrive at the same time:
+Each segment moves both carriages, usually by different distances, and both
+must arrive at the same time. The segment duration comes from the speed that
+matters for the cut: while cutting, the wire may not move through the foam
+faster than ``cut_feed`` at either end of the part (that is what sets how much
+foam melts); through air, no carriage may exceed ``travel_feed``. The F word
+then encodes that duration:
 
 * ``inverse-time`` (G93): ``F = 1 / segment_minutes``. Every controller
   interprets this the same way, so it is the default.
@@ -14,6 +17,7 @@ both arrive at the same time:
 from __future__ import annotations
 
 import math
+import unicodedata
 from collections.abc import Iterable, Iterator
 from dataclasses import dataclass
 
@@ -29,16 +33,27 @@ def fmt(value: float, decimals: int) -> str:
     return "0" if text in ("-0", "") else text
 
 
-def segment_feed(d_xy: float, d_uv: float, feed: float, mode: str) -> float:
-    """F word for a segment whose longest carriage move should run at ``feed`` mm/min."""
-    longest = max(d_xy, d_uv)
-    if longest <= 0.0:
+def segment_feed(d_xy: float, d_uv: float, feed: float, mode: str, drive: float | None = None) -> float:
+    """F word for a segment that takes ``drive / feed`` minutes.
+
+    ``drive`` is the length that must move at ``feed`` mm/min; it defaults to
+    the longer of the two carriage moves.
+    """
+    if drive is None:
+        drive = max(d_xy, d_uv)
+    if drive <= 0.0:
         raise ValueError("zero-length segment")
     if mode == "inverse-time":
-        return feed / longest
+        return feed / drive
     if mode == "units-per-minute":
-        return feed * math.hypot(d_xy, d_uv) / longest
+        return feed * math.hypot(d_xy, d_uv) / drive
     raise ValueError(f"unknown feed mode {mode!r}")
+
+
+def wire_displacement(d_xy: Point, d_uv: Point, z: float, tower_distance: float) -> float:
+    """How far the wire moves at span position ``z`` when the carriages move by ``d_xy`` / ``d_uv``."""
+    t = z / tower_distance
+    return math.hypot(d_xy[0] + (d_uv[0] - d_xy[0]) * t, d_xy[1] + (d_uv[1] - d_xy[1]) * t)
 
 
 @dataclass(frozen=True)
@@ -47,13 +62,14 @@ class Segment:
     uv: Point
     d_xy: float
     d_uv: float
+    drive: float
+    """Length (mm) that moves at ``feed``: the faster foam end while cutting, else the farther carriage."""
     feed: float
-    """Target speed (mm/min) of the farther-travelling carriage."""
     cutting: bool
 
     @property
     def minutes(self) -> float:
-        return max(self.d_xy, self.d_uv) / self.feed
+        return self.drive / self.feed
 
 
 def segments(toolpath: Toolpath, machine: Machine) -> Iterator[Segment]:
@@ -68,8 +84,15 @@ def segments(toolpath: Toolpath, machine: Machine) -> Iterator[Segment]:
         d_xy, d_uv = distance(pos_xy, xy), distance(pos_uv, uv)
         if max(d_xy, d_uv) == 0.0:
             continue
-        feed = machine.cut_feed if move.cutting else machine.travel_feed
-        yield Segment(xy, uv, d_xy, d_uv, feed, move.cutting)
+        if move.cutting and toolpath.foam_span is not None:
+            dxy = (xy[0] - pos_xy[0], xy[1] - pos_xy[1])
+            duv = (uv[0] - pos_uv[0], uv[1] - pos_uv[1])
+            drive = max(wire_displacement(dxy, duv, z, machine.tower_distance) for z in toolpath.foam_span)
+            drive = drive or max(d_xy, d_uv)
+        else:
+            drive = max(d_xy, d_uv)
+        feed = (machine.cut_feed if move.cutting else machine.travel_feed) * move.feed_scale
+        yield Segment(xy, uv, d_xy, d_uv, drive, feed, move.cutting)
         pos_xy, pos_uv = xy, uv
 
 
@@ -78,7 +101,9 @@ def job_minutes(toolpath: Toolpath, machine: Machine) -> float:
 
 
 def _comment(text: str) -> str:
-    return "(" + text.replace("(", "[").replace(")", "]") + ")"
+    """A ``( ... )`` comment that every controller accepts: plain ASCII, no nesting, no ``;``."""
+    text = unicodedata.normalize("NFKD", text).encode("ascii", "ignore").decode("ascii")
+    return "(" + text.replace("(", "[").replace(")", "]").replace(";", ",") + ")"
 
 
 def generate_gcode(toolpath: Toolpath, machine: Machine, comments: Iterable[str] = ()) -> str:
@@ -110,7 +135,7 @@ def generate_gcode(toolpath: Toolpath, machine: Machine, comments: Iterable[str]
         lines.append(_comment("switch the wire heat on now"))
 
     for seg in segments(toolpath, machine):
-        feed = segment_feed(seg.d_xy, seg.d_uv, seg.feed, machine.feed_mode)
+        feed = segment_feed(seg.d_xy, seg.d_uv, seg.feed, machine.feed_mode, seg.drive)
         lines.append(f"G1 {coords(seg.xy, seg.uv)} F{fmt(feed, f_dec)}")
 
     if machine.wire_power is not None:

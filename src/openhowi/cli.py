@@ -114,12 +114,59 @@ def cmd_send(args: argparse.Namespace) -> int:
     return 0
 
 
+def cmd_gui(args: argparse.Namespace) -> int:
+    from .server import serve
+
+    try:
+        serve(args.host, args.port, open_browser=not args.no_browser, allow_hosts=tuple(args.allow_host))
+    except OSError as exc:
+        return _err(f"cannot listen on {args.host}:{args.port}: {exc}")
+    return 0
+
+
+def cmd_slice(args: argparse.Namespace) -> int:
+    import json
+
+    from .project import SliceError, slice_project
+
+    try:
+        project = json.loads(Path(args.project).read_text(encoding="utf-8"))
+        result = slice_project(project)
+    except (OSError, json.JSONDecodeError, SliceError) as exc:
+        return _err(str(exc))
+    output = Path(args.output or Path(args.project).name.removesuffix(".json").removesuffix(".howi") + ".gcode")
+    output.write_text(result.gcode, encoding="utf-8")
+    stats = result.data["stats"]
+    mins, secs = divmod(round(stats["time_s"]), 60)
+    print(
+        f"Estimated time {mins} min {secs:02d} s, kerf root {stats['kerf']['root']:.2f} / tip {stats['kerf']['tip']:.2f} mm"
+    )
+    for warning in result.data["warnings"]:
+        print(f"warning: {warning}")
+    print(f"Wrote {output}")
+    return 0
+
+
 def build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(
         prog="openhowi", description="Open-source CAM and machine control for 4-axis hot-wire foam cutters."
     )
     parser.add_argument("--version", action="version", version=f"%(prog)s {__version__}")
     sub = parser.add_subparsers(dest="command", required=True)
+
+    p = sub.add_parser("gui", help="start the app (opens in your browser)")
+    p.add_argument("--host", default="127.0.0.1", help="address to listen on (default: this computer only)")
+    p.add_argument("--port", type=int, default=8765)
+    p.add_argument("--no-browser", action="store_true", help="don't open a browser window")
+    p.add_argument(
+        "--allow-host", action="append", default=[], help="extra host name the app may be reached by (repeatable)"
+    )
+    p.set_defaults(func=cmd_gui)
+
+    p = sub.add_parser("slice", help="slice a project saved from the app (.howi.json) to G-code")
+    p.add_argument("project")
+    p.add_argument("-o", "--output", help="G-code file to write (default: <project name>.gcode)")
+    p.set_defaults(func=cmd_slice)
 
     p = sub.add_parser("wing", help="generate G-code for a wing panel described in a TOML file")
     p.add_argument("config", help="job file, see examples/tapered_wing.toml")

@@ -25,7 +25,8 @@ class Machine:
     axis_letters: str = "XYUV"
     """G-code letters for the XY-carriage horizontal/vertical and UV-carriage horizontal/vertical axes."""
     cut_feed: float = 200.0
-    """Cutting speed in mm/min, applied to whichever carriage travels farther on each segment."""
+    """Cutting speed in mm/min: the wire's speed through the foam at the faster end of the part
+    (or of the faster carriage when the toolpath doesn't say where the foam is)."""
     travel_feed: float = 600.0
     """Speed in mm/min for moves through air."""
     feed_mode: str = "inverse-time"

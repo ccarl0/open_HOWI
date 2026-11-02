@@ -1,6 +1,9 @@
 # open_HOWI
 
-**Open-source CAM and machine control for 4-axis CNC hot-wire foam cutters.**
+**A free, open-source "slicer" for 4-axis CNC hot-wire foam cutters**: prepare a part, preview
+the cut, export G-code and run the machine from one app, the way PrusaSlicer works for 3D printers.
+
+![Prepare view: a tapered wing panel placed between the two carriages](docs/prepare.png)
 
 ## Why
 
@@ -10,27 +13,50 @@ setups also depend on an old PC with a **parallel (LPT) port** that sends step/d
 signals straight to the stepper drivers. Modern computers don't have that port, and the
 old machines that do are getting harder to keep running.
 
-open_HOWI aims to be a free alternative that:
+open_HOWI is a free alternative that:
 
-- runs on any current computer (Linux, Windows, macOS, even a Raspberry Pi) with Python 3.11+;
+- runs on any current computer (Linux, Windows, macOS, or a Raspberry Pi next to the machine);
 - talks to the machine over **USB** through a cheap GRBL-style controller board, so the
   timing-critical step pulses come from the microcontroller, not from the PC;
 - writes plain, readable G-code that other controllers (LinuxCNC, etc.) can run too.
 
-## What works today (v0.1)
+## The app
 
-| | |
+```bash
+pip install .        # Python 3.11+
+openhowi gui         # opens http://localhost:8765 in your browser
+```
+
+The app runs locally. The browser is only the window; slicing and the USB connection run in
+the `openhowi` process. It works offline.
+
+| Tab | What it does |
 |---|---|
-| Airfoils | Selig and Lednicer `.dat` files (e.g. from the UIUC database); built-in NACA 4-digit generator |
-| Wing cores | Different root/tip airfoils, taper, sweep, washout (twist), tip height offset |
-| 4-axis geometry | Root and tip sections are projected onto the two carriages, so the panel can sit anywhere along the wire |
-| Kerf | Separate root and tip kerf compensation |
-| Speed sync | Per-segment feed so both carriages finish each move together, with the farther-travelling side at your cut speed (G93 inverse time, or compensated G94) |
-| Machine limits | The job is checked against your travel range before any G-code is written |
-| Preview | SVG of both carriage paths |
-| Machine control | Streams G-code to GRBL over USB serial (character-counting protocol), clears alarms with `$X`, and on Ctrl-C does a feed hold, then a reset (wire off) |
+| **Prepare** | Choose a **machine** and a **material** preset, then set up the part: root/tip airfoils (NACA or any `.dat` file), chords, span, sweep, washout. The part, the foam block and both carriage paths update live in 3D as you type. |
+| **Preview** | Estimated time, cut lengths, kerf at each end, peak carriage speeds, the foam block you need and where to put it. Scrub or play back the cut with the timeline. Export G-code. |
+| **Device** | Connect over USB (or to the built-in **simulator**), live position, jog both carriages together or separately, home, unlock, set zero, wire on/off, start/pause/resume/stop the job, console. A **STOP** button (feed hold + reset, wire off) stays in the top bar while connected. |
 
-## How a 4-axis hot-wire cut works
+![Device tab: a job running on the simulator](docs/device.png)
+
+**Presets, like a slicer's printer/filament profiles:**
+
+- *Machine*: distance between the carriages, travel, axis letters, travel speed, feed mode, baud rate.
+- *Material*: cut speed, kerf at cut speed and at half speed, wire power, preheat. The built-in
+  EPS / XPS / EPP presets are only starting points. Run **Kerf test** (top bar): it cuts two
+  60 × 30 mm pieces, one at full speed and one at half, and you enter the measured kerf in your
+  own material preset.
+
+Your presets and airfoil library are stored in `~/.config/openhowi` (Linux),
+`~/Library/Application Support/openhowi` (macOS) or `%APPDATA%\openhowi` (Windows).
+Projects save as `.howi.json` files with the airfoils embedded, so you can share them.
+
+**Try it without a machine:** pick *Simulator (10× speed)* as the port in the Device tab.
+
+**Run it on a Raspberry Pi** at the machine and use it from another computer on your network:
+`openhowi gui --host 0.0.0.0 --no-browser`. Anyone who can reach that address can move the
+machine, so only do this on a network you trust.
+
+## How the cut works
 
 ```
  top view (looking down on the machine)
@@ -50,15 +76,18 @@ matching root and tip points must lie on the wire at the same moment. open_HOWI:
 
 1. resamples the root and tip airfoils so they have the same number of points, with the
    leading and trailing edges matched (cosine spacing, dense where curvature is high);
-2. scales, sweeps and twists each section and moves it outward by half its kerf;
-3. extends the line through each root/tip pair out to both carriages. These are the
-   paths the XY and UV axes must follow;
-4. sets the feed of each segment so both carriages arrive together. The farther-moving
-   side moves at `cut_feed`; the other side moves more slowly.
+2. scales, sweeps and twists each section and moves it outward by half its kerf. The kerf
+   at each end comes from the material and how fast that end actually moves. On a tapered
+   panel the narrow end moves more slowly and melts a wider slot;
+3. extends the line through each root/tip pair out to both carriages. These are the paths
+   the XY and UV axes must follow;
+4. times each segment so the wire never moves through the foam faster than the cut speed
+   at either end of the part. Both carriages arrive together; the outer one may move faster.
 
 In machine coordinates the trailing edge faces the origin. The wire rises at X=0 (behind the
 foam), cuts in to the trailing edge, goes over the upper surface to the leading edge, back
-under the lower surface, out the entry slot, and returns to the origin.
+under the lower surface, out the entry slot, and returns to the origin. Start every job with
+both carriages at the origin. Use **Set zero here** in the Device tab to choose where that is.
 
 ## Hardware
 
@@ -66,84 +95,28 @@ Any controller that accepts 4-axis G-code over USB works. A common, inexpensive 
 an **Arduino Mega 2560 + RAMPS 1.4** (or similar) running a 4-axis GRBL 1.1 build such as
 **Grbl-Mega-5X**:
 
-- set `axis_letters` in your job file to the letters your firmware uses, e.g. `"XYUV"` or `"XYZA"`;
-- if the wire's power supply is switched or PWM-controlled from the spindle output, set
-  `wire_power` to the `S` value for M3 (relative to GRBL's `$30` max spindle speed);
-  otherwise leave it out and switch the wire by hand;
+- set the machine preset's *axis letters* to the letters your firmware uses, e.g. `XYUV` or `XYZA`.
+  The firmware must report the axes in that order;
+- if the wire's power supply is switched or PWM-controlled from the spindle output, set the
+  material's *wire power* to the `S` value for M3 (relative to GRBL's `$30`), and turn laser
+  mode off (`$32=0`) so the wire stays hot during every move. Otherwise leave it blank and
+  switch the wire by hand;
 - set steps/mm and max rates (`$100`… / `$110`…) for each axis as usual.
 
-## Install
+G-code uses inverse-time feed (G93) by default, because every controller reads it the same
+way. Switch the machine preset to *Units per minute (G94)* only if yours lacks G93.
+
+## Command line
 
 ```bash
-git clone https://github.com/ccarl0/open_HOWI.git
-cd open_HOWI
-pip install '.[serial]'      # pyserial is only needed for sending to a machine
+openhowi slice my-wing.howi.json -o my-wing.gcode   # slice a project saved from the app
+openhowi wing examples/tapered_wing.toml --svg wing.svg   # TOML job file, explicit kerf values
+openhowi send wing.gcode --port /dev/ttyACM0         # stream to GRBL (COM3 etc. on Windows)
+openhowi send wing.gcode --dry-run                   # check a file without a machine
+openhowi naca 2412 -o naca2412.dat                   # write a NACA 4-digit airfoil
 ```
 
-## Quick start
-
-```bash
-# 1. Describe the job (see examples/tapered_wing.toml for every option)
-openhowi wing examples/tapered_wing.toml -o wing.gcode --svg wing.svg
-
-# 2. Check the summary (extents, cut length, estimated time) and open wing.svg
-
-# 3. Put both carriages at the origin, then cut
-openhowi send wing.gcode --port /dev/ttyACM0      # COM3 etc. on Windows
-```
-
-Other commands:
-
-```bash
-openhowi naca 2412 -o naca2412.dat   # write a NACA 4-digit airfoil
-openhowi send wing.gcode --dry-run   # check a file without a machine
-openhowi send wing.gcode --port /dev/ttyACM0 --unlock   # send $X first
-```
-
-## Job file reference
-
-```toml
-title = "My wing"
-
-[machine]
-tower_distance = 1000.0     # mm between the XY and UV carriages
-x_travel = 500.0            # usable travel, mm
-y_travel = 250.0
-axis_letters = "XYUV"
-cut_feed = 180.0            # mm/min for the farther-travelling carriage
-travel_feed = 600.0         # mm/min through air
-feed_mode = "inverse-time"  # or "units-per-minute"
-wire_power = 600            # optional: S value for M3
-preheat = 3.0               # seconds to dwell after M3
-
-[wing]
-root_airfoil = "naca2412"   # or "airfoils/clarky.dat" (relative to this file)
-tip_airfoil = "naca2410"    # default: same as root
-root_chord = 250.0
-tip_chord = 160.0           # default: same as root
-span = 600.0
-sweep = 40.0                # tip LE this far aft of root LE
-washout = 1.5               # degrees, tip nose-down
-washout_pivot = 0.25        # twist axis as a fraction of chord
-tip_offset_y = 0.0          # tip LE height above root LE
-root_kerf = 1.0             # slot width the wire melts, mm
-tip_kerf = 1.3
-points_per_surface = 80
-
-[placement]
-root_side = "xy"            # "uv" cuts the opposite-hand panel
-root_offset = 200.0         # root face distance from that carriage
-x_margin = 25.0             # machine X of the trailing edge
-y_offset = 40.0             # machine Y of the root chord line
-```
-
-**Measuring kerf:** cut a straight slot through a scrap block at your `cut_feed` and wire
-heat, then measure its width. On a tapered panel the narrow end moves more slowly and melts
-a wider slot, so it usually needs a larger kerf value.
-
-**Placing the foam:** the rear face of the block must lie between X=0 and `x_margin`, so the
-wire enters from outside the foam. The bottom of the core is at about `y_offset` minus the
-lower-surface depth; keep the block above Y=0.
+`examples/tapered_wing.toml` documents every option of the TOML job format.
 
 ## Safety
 
@@ -151,31 +124,36 @@ lower-surface depth; keep the block above Y=0.
   ventilated area.
 - The wire is hot enough to burn. Keep the power supply's current limited, and never leave
   a hot wire still inside the foam or unattended.
-- Run new G-code once with the wire cold (or with `--dry-run` and the SVG preview) before
-  cutting.
+- Run new G-code on the simulator, or once on the machine with the wire cold, before cutting.
 
 ## Roadmap
 
-- Graphical interface: jogging, homing, live position, preview while cutting
-- DXF/SVG import for 2D shapes (fuselage formers, letters, signs)
+- DXF/SVG import for 2D shapes (fuselage formers, letters, signs), several parts per block
 - Spar slots, LE/TE cut-outs and sheeting allowance for wing cores
-- Speed-dependent kerf model
+- Homing/limit-aware placement and a block-size optimiser
 - Rotary-table (5th axis) support
+- Packaged desktop builds (one-click install on Windows/macOS)
 
 ## Development
 
 ```bash
-pip install -e '.[dev,serial]'
+pip install -e '.[dev]'
 pytest
 ruff check src tests && ruff format --check src tests
 ```
 
-The core (`airfoil`, `geometry`, `wing`, `toolpath`, `gcode`) is pure Python with no
-dependencies. `sender` needs pyserial only when talking to real hardware; its tests use a
-simulated GRBL.
+| Module | |
+|---|---|
+| `airfoil`, `geometry`, `wing` | Airfoil parsing/generation and 2D geometry (pure Python) |
+| `toolpath`, `gcode` | Placement, the 4-axis projection, feed timing and G-code output |
+| `material`, `presets`, `project`, `calibration` | Slicer layer: presets, kerf model, project slicing, kerf test |
+| `simulator`, `controller`, `sender` | Simulated GRBL, the threaded device controller, the CLI streamer |
+| `server`, `web/` | Local HTTP API and the browser UI (three.js r179 vendored under `web/vendor`) |
 
 ## License
 
 open_HOWI is free software: you can redistribute it and/or modify it under the terms of the
 [GNU General Public License](LICENSE) as published by the Free Software Foundation, either
 version 3 of the License, or (at your option) any later version.
+
+The bundled three.js (`src/openhowi/web/vendor/three`) is MIT licensed.
