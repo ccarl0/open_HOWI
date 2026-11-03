@@ -52,6 +52,14 @@ def cmd_wing(args: argparse.Namespace) -> int:
         ),
         f"sweep {wing.sweep:g} mm, washout {wing.washout:g} deg, kerf root {wing.root_kerf:g} / tip {wing.tip_kerf:g} mm",
     ]
+    spec = wing.core_spec()
+    built_up = spec.sheeted or spec.le_stock > 0 or spec.te_stock > 0 or spec.slot_top or spec.slot_bottom
+    if built_up:
+        comments.append(
+            f"core: sheeting top {spec.sheeting_top:g} / bottom {spec.sheeting_bottom:g} mm, "
+            f"LE stock {spec.le_stock:g} mm, TE stock {spec.te_stock:g} mm, spar slots {spec.spar_width:g} mm wide, "
+            f"top {spec.spar_depth_top:g} / bottom {spec.spar_depth_bottom:g} mm deep at {spec.spar_position:g} %"
+        )
     gcode = generate_gcode(toolpath, machine, comments)
     output = Path(args.output or Path(args.config).with_suffix(".gcode").name)
     output.write_text(gcode, encoding="utf-8")
@@ -66,6 +74,9 @@ def cmd_wing(args: argparse.Namespace) -> int:
     for name, (xmin, ymin, xmax, ymax) in toolpath.extents().items():
         print(f"  {name} extents   X {xmin:.1f}..{xmax:.1f} mm, Y {ymin:.1f}..{ymax:.1f} mm")
     print(f"  est. time    {mins} min {secs:02d} s at {machine.cut_feed:g} mm/min")
+    if built_up:
+        cut = wing.cores()[2]
+        print(f"  core ends    {cut['root_te']:.1f} mm (root) / {cut['tip_te']:.1f} mm (tip) before the trailing edge")
     print(f"Wrote {output}")
 
     if args.svg:

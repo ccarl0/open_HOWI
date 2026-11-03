@@ -193,6 +193,15 @@ export class Viewer {
       color: this.colors.part, roughness: 0.85, side: THREE.DoubleSide, flatShading: r.kind === 'shape',
     });
     for (const solid of r.part.solids) this.addSolid(solid, r.part.z_root, r.part.z_tip, partMat);
+    // Finished outline (e.g. the sheeted airfoil) around the core, at both faces
+    const skinMat = new THREE.LineBasicMaterial({ color: this.colors.frame, transparent: true, opacity: 0.9 });
+    for (const skin of r.part.skins || []) {
+      for (const [pts, z] of [[skin.root, r.part.z_root], [skin.tip, r.part.z_tip]]) {
+        const geom = new THREE.BufferGeometry();
+        geom.setAttribute('position', new THREE.Float32BufferAttribute(pts.flatMap(([x, y]) => [x, y, z]), 3));
+        this.partGroup.add(new THREE.LineLoop(geom, skinMat));
+      }
+    }
 
     // Carriage paths: faint full path, bright overlay for the part already cut
     const p = r.path;

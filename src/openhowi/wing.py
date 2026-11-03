@@ -12,7 +12,8 @@ from collections.abc import Sequence
 from dataclasses import dataclass
 
 from .airfoil import Airfoil
-from .geometry import Point, offset_polyline, signed_area
+from .core import CoreSpec, core_runs, materialize, run_counts
+from .geometry import Point, offset_polygon, signed_area
 
 
 def place_section(
@@ -30,23 +31,30 @@ def place_section(
     chord-line point at ``pivot`` (fraction of chord from the leading edge).
     """
     base = airfoil.normalized().resampled(n_per_surface).points
+    return position_section([(x * chord, y * chord) for x, y in base], chord, x_le, y_le, twist_deg, pivot)
+
+
+def position_section(
+    points: Sequence[Point], chord: float, x_le: float, y_le: float, twist_deg: float, pivot: float
+) -> list[Point]:
+    """Twist a section given in its own frame (leading edge at the origin) and move it into place."""
     phi = math.radians(twist_deg)
     c, s = math.cos(phi), math.sin(phi)
     px = pivot * chord
-    out: list[Point] = []
-    for x, y in base:
-        dx, dy = x * chord - px, y * chord
-        out.append((x_le + px + dx * c - dy * s, y_le + dx * s + dy * c))
-    return out
+    return [(x_le + px + (x - px) * c - y * s, y_le + (x - px) * s + y * c) for x, y in points]
 
 
 def apply_kerf(contour: Sequence[Point], kerf: float) -> list[Point]:
-    """Move the wire path outwards by half the kerf so the part keeps its size."""
+    """Move the wire path outwards by half the kerf so the part keeps its size.
+
+    The contour is treated as closed: the edge from its last point back to its
+    first is the trailing-edge face (zero length on a sharp trailing edge).
+    """
     if kerf == 0.0:
         return list(contour)
     half = kerf / 2.0
     # Outside of a counter-clockwise contour is on the right of travel.
-    return offset_polyline(contour, -half if signed_area(contour) > 0.0 else half)
+    return offset_polygon(contour, -half if signed_area(contour) > 0.0 else half)
 
 
 def project_to_towers(
@@ -95,6 +103,21 @@ class WingPanel:
     tip_kerf: float = 0.0
     """Width of the slot at the tip. The slower-moving end usually melts a wider slot."""
     points_per_surface: int = 80
+    sheeting_top: float = 0.0
+    """Thickness of the top skin (balsa, obeche, ...) the core is undersized for (mm)."""
+    sheeting_bottom: float = 0.0
+    le_stock: float = 0.0
+    """Cut the core back this far from the leading edge for a LE strip (mm along the chord)."""
+    te_stock: float = 0.0
+    """Cut the core back this far from the trailing edge for a TE strip (mm)."""
+    spar_position: float = 25.0
+    """Centre of the spar slots at the root, % of chord from the leading edge."""
+    spar_position_tip: float | None = None
+    """Spar position at the tip (% of chord); defaults to the root position."""
+    spar_width: float = 0.0
+    spar_depth_top: float = 0.0
+    """Depth of the slot cut into the top surface (mm); 0 = no slot."""
+    spar_depth_bottom: float = 0.0
 
     def __post_init__(self) -> None:
         if self.tip_airfoil is None:
@@ -111,16 +134,49 @@ class WingPanel:
             raise ValueError("washout_pivot must be between 0 and 1")
         if self.points_per_surface < 3:
             raise ValueError("points_per_surface must be >= 3")
+        if self.spar_position_tip is not None and not 0 < self.spar_position_tip < 100:
+            raise ValueError("spar_position_tip must be between 0 and 100 % of the chord")
+        self.core_spec()  # validates the core options
 
-    def root_contour(self) -> list[Point]:
-        """Kerf-compensated wire path in the root plane."""
-        path = place_section(self.root_airfoil, self.root_chord, self.points_per_surface)
-        return apply_kerf(path, self.root_kerf)
+    def core_spec(self) -> CoreSpec:
+        return CoreSpec(
+            sheeting_top=self.sheeting_top,
+            sheeting_bottom=self.sheeting_bottom,
+            le_stock=self.le_stock,
+            te_stock=self.te_stock,
+            spar_position=self.spar_position,
+            spar_width=self.spar_width,
+            spar_depth_top=self.spar_depth_top,
+            spar_depth_bottom=self.spar_depth_bottom,
+        )
 
-    def tip_contour(self) -> list[Point]:
-        """Kerf-compensated wire path in the tip plane (index-matched to the root)."""
+    def cores(self) -> tuple[list[Point], list[Point], dict[str, float]]:
+        """Finished-size foam core at the root and tip (no kerf), index-matched, in place.
+
+        Also returns how far each core is cut back from the airfoil's leading and trailing edges.
+        """
         assert self.tip_airfoil is not None and self.tip_chord is not None
-        path = place_section(
+        spec = self.core_spec()
+        root = core_runs(self.root_airfoil, self.root_chord, spec)
+        tip = core_runs(self.tip_airfoil, self.tip_chord, spec, self.spar_position_tip)
+        counts = run_counts(root, self.points_per_surface)
+        root_pts = position_section(materialize(root, counts), self.root_chord, 0.0, 0.0, 0.0, self.washout_pivot)
+        tip_pts = position_section(
+            materialize(tip, counts), self.tip_chord, self.sweep, self.tip_offset_y, self.washout, self.washout_pivot
+        )
+        cutbacks = {
+            "root_te": root.te_cutback,
+            "tip_te": tip.te_cutback,
+            "root_le": root.le_cutback,
+            "tip_le": tip.le_cutback,
+        }
+        return root_pts, tip_pts, cutbacks
+
+    def skins(self) -> tuple[list[Point], list[Point]]:
+        """Outline of the finished airfoil at the root and tip (for display)."""
+        assert self.tip_airfoil is not None and self.tip_chord is not None
+        root = place_section(self.root_airfoil, self.root_chord, self.points_per_surface, pivot=self.washout_pivot)
+        tip = place_section(
             self.tip_airfoil,
             self.tip_chord,
             self.points_per_surface,
@@ -129,4 +185,12 @@ class WingPanel:
             twist_deg=self.washout,
             pivot=self.washout_pivot,
         )
-        return apply_kerf(path, self.tip_kerf)
+        return root, tip
+
+    def root_contour(self) -> list[Point]:
+        """Kerf-compensated wire path in the root plane."""
+        return apply_kerf(self.cores()[0], self.root_kerf)
+
+    def tip_contour(self) -> list[Point]:
+        """Kerf-compensated wire path in the tip plane (index-matched to the root)."""
+        return apply_kerf(self.cores()[1], self.tip_kerf)

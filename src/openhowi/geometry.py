@@ -124,22 +124,32 @@ def offset_polygon(points: Sequence[Point], d: float, miter_limit: float = 4.0) 
     """Offset a closed polygon (first point not repeated) by ``d`` to the left of its direction of travel.
 
     Point count and order are preserved, so index-matched root/tip outlines stay matched.
+    Zero-length edges (e.g. a sharp trailing edge closed onto itself) take their
+    neighbours' direction, so the two coincident points move together.
     """
     n = len(points)
     if n < 3:
         raise ValueError("polygon needs at least three points")
     if d == 0.0:
         return [(float(x), float(y)) for x, y in points]
-    normals: list[Point] = []
+    normals: list[Point | None] = []
     for i in range(n):
         a, b = points[i], points[(i + 1) % n]
         length = distance(a, b)
-        if length == 0.0:
-            raise ValueError("cannot offset a polygon with repeated points")
-        normals.append(((a[1] - b[1]) / length, (b[0] - a[0]) / length))
+        normals.append(None if length < 1e-12 else ((a[1] - b[1]) / length, (b[0] - a[0]) / length))
+    if all(v is None for v in normals):
+        raise ValueError("cannot offset a polygon whose points all coincide")
+
+    def edge_normal(i: int, step: int) -> Point:
+        for k in range(n):
+            v = normals[(i + step * k) % n]
+            if v is not None:
+                return v
+        raise AssertionError("unreachable")
+
     out: list[Point] = []
     for i, p in enumerate(points):
-        n1, n2 = normals[i - 1], normals[i]
+        n1, n2 = edge_normal(i - 1, -1), edge_normal(i, 1)
         sx, sy = n1[0] + n2[0], n1[1] + n2[1]
         norm = math.hypot(sx, sy)
         if norm < 1e-12:

@@ -8,6 +8,7 @@ either the GUI or the command line (``openhowi slice project.howi.json``).
 from __future__ import annotations
 
 import copy
+import dataclasses
 from dataclasses import dataclass, field
 from typing import Any
 
@@ -30,7 +31,7 @@ from .shapes import (
     transform_regions,
 )
 from .toolpath import Placement, PlacementError, Toolpath, layout_wing, wing_toolpath
-from .wing import WingPanel, place_section
+from .wing import WingPanel
 
 PROJECT_VERSION = 1
 SLOW_END_WARNING = 0.4
@@ -51,6 +52,24 @@ PART_FIELDS: list[dict[str, Any]] = [
      "step": 0.05, "group": "Planform"},
     {"key": "tip_offset_y", "label": "Tip height offset", "unit": "mm", "type": "number", "group": "Planform",
      "help": "Raise the tip leading edge, e.g. to cut dihedral into a flat-bottomed panel."},
+    {"key": "sheeting_top", "label": "Top sheeting", "unit": "mm", "type": "number", "min": 0, "step": 0.1,
+     "group": "Core", "help": "Skin glued on top (e.g. 1.5 mm balsa, 0.6 mm obeche): the core is cut this much undersize."},
+    {"key": "sheeting_bottom", "label": "Bottom sheeting", "unit": "mm", "type": "number", "min": 0, "step": 0.1,
+     "group": "Core"},
+    {"key": "le_stock", "label": "LE stock", "unit": "mm", "type": "number", "min": 0, "step": 0.5, "group": "Core",
+     "help": "Cut the core back this far from the leading edge to fit a balsa or hardwood leading-edge strip."},
+    {"key": "te_stock", "label": "TE stock", "unit": "mm", "type": "number", "min": 0, "step": 0.5, "group": "Core",
+     "help": "Cut the core back this far from the trailing edge to fit a trailing-edge strip."},
+    {"key": "spar_width", "label": "Slot width", "unit": "mm", "type": "number", "min": 0, "step": 0.5,
+     "group": "Spar slots", "help": "Width of the spar cap. 0: no spar slots."},
+    {"key": "spar_depth_top", "label": "Top slot depth", "unit": "mm", "type": "number", "min": 0, "step": 0.1,
+     "group": "Spar slots", "help": "Depth below the core surface (under the sheeting). 0: no slot on top."},
+    {"key": "spar_depth_bottom", "label": "Bottom slot depth", "unit": "mm", "type": "number", "min": 0, "step": 0.1,
+     "group": "Spar slots", "help": "0: no slot underneath."},
+    {"key": "spar_position", "label": "Position", "unit": "% chord", "type": "number", "min": 1, "max": 99, "step": 1,
+     "group": "Spar slots", "help": "Centre of the slots, measured from the leading edge."},
+    {"key": "spar_position_tip", "label": "Tip position", "unit": "% chord", "type": "number", "min": 1, "max": 99,
+     "step": 1, "optional": True, "group": "Spar slots", "help": "Blank: same as the root."},
     {"key": "kerf_root_override", "label": "Root kerf override", "unit": "mm", "type": "number", "min": 0,
      "step": 0.05, "optional": True, "group": "Advanced", "help": "Blank: from the material and the cut speed at the root."},
     {"key": "kerf_tip_override", "label": "Tip kerf override", "unit": "mm", "type": "number", "min": 0,
@@ -118,6 +137,15 @@ DEFAULT_PARTS: dict[str, dict[str, Any]] = {
         "washout": 1.0,
         "washout_pivot": 0.25,
         "tip_offset_y": 0.0,
+        "sheeting_top": 0.0,
+        "sheeting_bottom": 0.0,
+        "le_stock": 0.0,
+        "te_stock": 0.0,
+        "spar_width": 0.0,
+        "spar_depth_top": 0.0,
+        "spar_depth_bottom": 0.0,
+        "spar_position": 25.0,
+        "spar_position_tip": None,
         "kerf_root_override": None,
         "kerf_tip_override": None,
         "points_per_surface": 80,
@@ -196,6 +224,8 @@ class _Part:
     comments: list[str]
     warnings: list[str]
     stats: dict[str, Any]
+    skins: list[tuple[list[Point], list[Point]]] = field(default_factory=list)
+    """Finished outlines (root, tip) to draw around the cores, e.g. the sheeted airfoil."""
 
 
 def _r(v: float) -> float:
@@ -280,17 +310,13 @@ def _wing_part(part: dict[str, Any], machine: Machine, material: Material, place
     pivot = 0.25 if pivot is None else pivot
     tip_offset_y = _number(part, "tip_offset_y", 0.0) or 0.0
     n = int(_number(part, "points_per_surface", 80) or 80)
-
-    # Kerf from the material, at the speed each end of the part actually moves.
-    try:
-        root_len = polyline_length(place_section(root_airfoil, root_chord, n))
-        tip_len = polyline_length(
-            place_section(tip_airfoil, tip_chord, n, x_le=sweep, y_le=tip_offset_y, twist_deg=washout, pivot=pivot)
-        )
-    except (AirfoilError, ValueError) as exc:
-        raise SliceError(str(exc)) from exc
-    ratio = _speed_ratios(root_len, tip_len)
-    kerf = _kerfs(part, material, ratio)
+    core = {
+        key: _number(part, key, 0.0) or 0.0
+        for key in ("sheeting_top", "sheeting_bottom", "le_stock", "te_stock", "spar_width", "spar_depth_top",
+                    "spar_depth_bottom")
+    }  # fmt: skip
+    spar_position = _number(part, "spar_position", 25.0)
+    spar_position_tip = _number(part, "spar_position_tip")
 
     try:
         wing = WingPanel(
@@ -303,14 +329,51 @@ def _wing_part(part: dict[str, Any], machine: Machine, material: Material, place
             washout=washout,
             washout_pivot=pivot,
             tip_offset_y=tip_offset_y,
-            root_kerf=kerf[0],
-            tip_kerf=kerf[1],
             points_per_surface=n,
+            spar_position=25.0 if spar_position is None else spar_position,
+            spar_position_tip=spar_position_tip,
+            **core,
         )
-    except (TypeError, ValueError) as exc:
+        # Kerf from the material, at the speed each end of the core actually moves.
+        root_core, tip_core, cutbacks = wing.cores()
+        ratio = _speed_ratios(polyline_length(root_core + root_core[:1]), polyline_length(tip_core + tip_core[:1]))
+        kerf = _kerfs(part, material, ratio)
+        wing = dataclasses.replace(wing, root_kerf=kerf[0], tip_kerf=kerf[1])
+    except (TypeError, ValueError) as exc:  # includes CoreError
         raise SliceError(str(exc)) from exc
 
     layout = layout_wing(wing, machine, placement)
+    comments = [
+        f"root {root_airfoil.name} {root_chord:g} mm, tip {tip_airfoil.name} {tip_chord:g} mm, span {span:g} mm"
+    ]
+    warnings: list[str] = []
+    stats: dict[str, Any] = {"airfoils": {"root": root_airfoil.name, "tip": tip_airfoil.name}}
+    spec = wing.core_spec()
+    built_up = spec.sheeted or spec.le_stock > 0 or spec.te_stock > 0 or spec.slot_top or spec.slot_bottom
+    if built_up:
+        comments.append(
+            f"core: sheeting top {spec.sheeting_top:g} / bottom {spec.sheeting_bottom:g} mm, "
+            f"LE stock {spec.le_stock:g} mm, TE stock {spec.te_stock:g} mm"
+        )
+        if spec.slot_top or spec.slot_bottom:
+            where = f"{spec.spar_position:g} %"
+            if spar_position_tip is not None:
+                where += f" (tip {spar_position_tip:g} %)"
+            comments.append(
+                f"spar slots {spec.spar_width:g} mm wide at {where}: top {spec.spar_depth_top:g} mm, "
+                f"bottom {spec.spar_depth_bottom:g} mm deep"
+            )
+        stats["core"] = {
+            "te_cutback": {"root": round(cutbacks["root_te"], 1), "tip": round(cutbacks["tip_te"], 1)},
+            "le_cutback": {"root": round(cutbacks["root_le"], 1), "tip": round(cutbacks["tip_le"], 1)},
+        }
+        meet = max(cutbacks["root_te"], cutbacks["tip_te"])
+        if spec.sheeted and meet > spec.te_stock + 0.5:
+            warnings.append(
+                f"The core stops {cutbacks['root_te']:.1f} mm (root) / {cutbacks['tip_te']:.1f} mm (tip) short of the "
+                "trailing edge, where it gets thinner than the sheeting: glue the skins together there or fit a "
+                "trailing-edge strip."
+            )
     return _Part(
         toolpath=wing_toolpath(layout, machine),
         z_root=layout.z_root,
@@ -319,11 +382,10 @@ def _wing_part(part: dict[str, Any], machine: Machine, material: Material, place
         tip_regions=[Region(layout.tip_shape)],
         kerf=kerf,
         ratio=ratio,
-        comments=[
-            f"root {root_airfoil.name} {root_chord:g} mm, tip {tip_airfoil.name} {tip_chord:g} mm, span {span:g} mm"
-        ],
-        warnings=[],
-        stats={"airfoils": {"root": root_airfoil.name, "tip": tip_airfoil.name}},
+        comments=comments,
+        warnings=warnings,
+        stats=stats,
+        skins=[(layout.root_skin, layout.tip_skin)] if built_up else [],
     )
 
 
@@ -520,6 +582,7 @@ def _finish(
             "solids": [
                 {"root": region_json(r), "tip": region_json(tp)} for r, tp in zip(built.root_regions, built.tip_regions)
             ],
+            "skins": [{"root": _pts(r), "tip": _pts(tp)} for r, tp in built.skins],
         },
         "block": block,
         "path": {"t": times, "xy": xy_pts, "uv": uv_pts, "cut": cut},

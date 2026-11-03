@@ -3,11 +3,11 @@
 
 from __future__ import annotations
 
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 
 from .geometry import Point
 from .machine import Machine
-from .wing import WingPanel, place_section, project_to_towers
+from .wing import WingPanel, apply_kerf, project_to_towers
 
 
 class PlacementError(ValueError):
@@ -77,11 +77,16 @@ class WingLayout:
     z_root: float
     z_tip: float
     root_shape: list[Point]
-    """Finished root section (no kerf), for display."""
+    """Root foam core (no kerf), for display."""
     tip_shape: list[Point]
     xy: list[Point]
     """Kerf-compensated path of the XY carriage."""
     uv: list[Point]
+    root_skin: list[Point] = field(default_factory=list)
+    """Outline of the finished (sheeted) airfoil at the root, for display."""
+    tip_skin: list[Point] = field(default_factory=list)
+    cutbacks: dict[str, float] = field(default_factory=dict)
+    """How far the cores stop short of the airfoil's leading/trailing edges (mm)."""
 
 
 def span_positions(span: float, machine: Machine, placement: Placement) -> tuple[float, float]:
@@ -104,7 +109,10 @@ def span_positions(span: float, machine: Machine, placement: Placement) -> tuple
 def layout_wing(wing: WingPanel, machine: Machine, placement: Placement) -> WingLayout:
     d = machine.tower_distance
     z_root, z_tip = span_positions(wing.span, machine, placement)
-    xy, uv = project_to_towers(wing.root_contour(), z_root, wing.tip_contour(), z_tip, d)
+    root_core, tip_core, cutbacks = wing.cores()
+    xy, uv = project_to_towers(
+        apply_kerf(root_core, wing.root_kerf), z_root, apply_kerf(tip_core, wing.tip_kerf), z_tip, d
+    )
 
     # Mirror X so the trailing edge faces the origin and the wire enters from behind it.
     x_back = max(p[0] for p in xy + uv)
@@ -112,18 +120,18 @@ def layout_wing(wing: WingPanel, machine: Machine, placement: Placement) -> Wing
     def to_machine(points: list[Point]) -> list[Point]:
         return [(placement.x_margin + (x_back - x), placement.y_offset + y) for x, y in points]
 
-    assert wing.tip_airfoil is not None and wing.tip_chord is not None
-    root_shape = place_section(wing.root_airfoil, wing.root_chord, wing.points_per_surface)
-    tip_shape = place_section(
-        wing.tip_airfoil,
-        wing.tip_chord,
-        wing.points_per_surface,
-        x_le=wing.sweep,
-        y_le=wing.tip_offset_y,
-        twist_deg=wing.washout,
-        pivot=wing.washout_pivot,
+    root_skin, tip_skin = wing.skins()
+    return WingLayout(
+        z_root,
+        z_tip,
+        to_machine(root_core),
+        to_machine(tip_core),
+        to_machine(xy),
+        to_machine(uv),
+        to_machine(root_skin),
+        to_machine(tip_skin),
+        cutbacks,
     )
-    return WingLayout(z_root, z_tip, to_machine(root_shape), to_machine(tip_shape), to_machine(xy), to_machine(uv))
 
 
 def check_limits(toolpath: Toolpath, machine: Machine, tol: float = 1e-6) -> None:
@@ -141,14 +149,18 @@ def wing_toolpath(layout: WingLayout, machine: Machine) -> Toolpath:
     """Toolpath for one wing core, trailing edge facing the machine origin.
 
     The wire rises at X=0 (outside the foam) to the trailing-edge height,
-    cuts in to the trailing edge, goes over the upper surface to the leading
-    edge, back along the lower surface, out the entry slot, and down to the
-    origin.
+    cuts in to the trailing edge, goes over the upper surface (and through any
+    spar slot) to the leading edge, back along the lower surface, up the
+    trailing-edge face of a blunt or cut-back core, out the entry slot, and
+    down to the origin.
     """
     xy, uv = layout.xy, layout.uv
     moves = [Move((0.0, xy[0][1]), (0.0, uv[0][1]), cutting=False)]
     moves += [Move(a, b, cutting=True) for a, b in zip(xy, uv)]
-    moves.append(Move((0.0, xy[-1][1]), (0.0, uv[-1][1]), cutting=True))
+    # Close the outline: cut the trailing-edge face (zero length on a sharp trailing edge), then
+    # leave along the entry cut, so no strip of foam stays attached behind the trailing edge.
+    moves.append(Move(xy[0], uv[0], cutting=True))
+    moves.append(Move((0.0, xy[0][1]), (0.0, uv[0][1]), cutting=True))
     moves.append(Move((0.0, 0.0), (0.0, 0.0), cutting=False))
 
     span = (min(layout.z_root, layout.z_tip), max(layout.z_root, layout.z_tip))

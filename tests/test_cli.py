@@ -55,3 +55,10 @@ def test_shape_command(tmp_path, capsys, monkeypatch):
     assert main(["shape", str(drawing), "--machine", "nope"]) == 1
     assert "no machine preset named 'nope'" in capsys.readouterr().err
     assert main(["shape", str(tmp_path / "x.pdf")]) == 1
+
+
+def test_sheeted_wing_example(tmp_path, capsys):
+    out = tmp_path / "core.gcode"
+    assert main(["wing", str(EXAMPLE.parent / "sheeted_wing.toml"), "-o", str(out)]) == 0
+    assert "core ends" in capsys.readouterr().out
+    assert "(core: sheeting top 1.5 / bottom 1.5 mm" in out.read_text()

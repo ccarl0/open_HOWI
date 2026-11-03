@@ -422,12 +422,14 @@ function renderThumbs() {
   }
   for (const [label, face, name] of faces) {
     const rings = r.part.solids.flatMap((sd) => [sd[face].outer, ...sd[face].holes]);
-    const pts = rings.flat();
+    const skins = (r.part.skins || []).map((sk) => sk[face]);
+    const pts = rings.flat().concat(skins.flat());
     const xs = pts.map((q) => q[0]); const ys = pts.map((q) => q[1]);
     const x0 = Math.min(...xs); const x1 = Math.max(...xs); const y0 = Math.min(...ys); const y1 = Math.max(...ys);
     // Airfoils are drawn leading edge left, as usual; drawings as they appear in the machine.
     const fx = r.kind === 'wing' ? (x) => x1 - x : (x) => x - x0;
-    const d = rings.map((ring) => ring.map((q, i) => `${i ? 'L' : 'M'}${fx(q[0]).toFixed(2)} ${(y1 - q[1]).toFixed(2)}`).join(' ') + 'Z').join(' ');
+    const toPath = (list) => list.map((ring) => ring.map((q, i) => `${i ? 'L' : 'M'}${fx(q[0]).toFixed(2)} ${(y1 - q[1]).toFixed(2)}`).join(' ') + 'Z').join(' ');
+    const d = toPath(rings);
     const svg = document.createElementNS('http://www.w3.org/2000/svg', 'svg');
     const pad = Math.max(x1 - x0, y1 - y0) * 0.02;
     svg.setAttribute('viewBox', `${-pad} ${-pad} ${x1 - x0 + 2 * pad} ${y1 - y0 + 2 * pad}`);
@@ -436,6 +438,12 @@ function renderThumbs() {
     path.setAttribute('d', d);
     path.setAttribute('fill-rule', 'evenodd');
     svg.append(path);
+    if (skins.length) {
+      const skin = document.createElementNS('http://www.w3.org/2000/svg', 'path');
+      skin.setAttribute('d', toPath(skins));
+      skin.setAttribute('class', 'skin');
+      svg.append(skin);
+    }
     box.append(el('figure', {}, svg, el('figcaption', {}, name ? `${label} · ${name}` : label)));
   }
 }
@@ -471,6 +479,10 @@ function renderResult() {
     ['Cut length', `${xy} ${num(s.cut_length.XY, 0)} · ${uv} ${num(s.cut_length.UV, 0)} mm`],
     ['Kerf', `root ${num(s.kerf.root, 2)} · tip ${num(s.kerf.tip, 2)} mm`],
     ...(s.speed_ratio[slow] < 0.999 ? [['Slower end', `${slow}, ${Math.round(s.speed_ratio[slow] * 100)} % of cut speed`]] : []),
+    ...(s.core && (s.core.te_cutback.root > 0.05 || s.core.te_cutback.tip > 0.05)
+      ? [['Core ends before TE', `root ${num(s.core.te_cutback.root, 1)} · tip ${num(s.core.te_cutback.tip, 1)} mm`]] : []),
+    ...(s.core && (s.core.le_cutback.root > 0.05 || s.core.le_cutback.tip > 0.05)
+      ? [['Core starts behind LE', `root ${num(s.core.le_cutback.root, 1)} · tip ${num(s.core.le_cutback.tip, 1)} mm`]] : []),
     ['Peak carriage speed', `${num(s.peak_speed.XY, 0)} · ${num(s.peak_speed.UV, 0)} mm/min`],
     [`${xy} range`, `X ${num(s.extents.XY[2], 0)} · Y ${num(s.extents.XY[3], 0)} mm`],
     [`${uv} range`, `X ${num(s.extents.UV[2], 0)} · Y ${num(s.extents.UV[3], 0)} mm`],

@@ -32,7 +32,7 @@ the `openhowi` process. It works offline.
 
 | Tab | What it does |
 |---|---|
-| **Prepare** | Choose a **machine** and a **material** preset, then set up the part: a **wing panel** (root/tip airfoils from NACA or any `.dat` file, chords, span, sweep, washout) or a **2D shape** from a DXF or SVG drawing. The part, the foam block and both carriage paths update live in 3D as you type. |
+| **Prepare** | Choose a **machine** and a **material** preset, then set up the part: a **wing panel** (root/tip airfoils from NACA or any `.dat` file, chords, span, sweep, washout, sheeting allowance, LE/TE stock and spar slots) or a **2D shape** from a DXF or SVG drawing. The part, the foam block and both carriage paths update live in 3D as you type. |
 | **Preview** | Estimated time, cut lengths, kerf at each end, peak carriage speeds, the foam block you need and where to put it. Scrub or play back the cut with the timeline. Export G-code. |
 | **Device** | Connect over USB (or to the built-in **simulator**), live position, jog both carriages together or separately, home, unlock, set zero, wire on/off, start/pause/resume/stop the job, console. A **STOP** button (feed hold + reset, wire off) stays in the top bar while connected. |
 
@@ -51,6 +51,26 @@ Your presets and airfoil library are stored in `~/.config/openhowi` (Linux),
 Projects save as `.howi.json` files with the airfoils embedded, so you can share them.
 
 **Try it without a machine:** pick *Simulator (10× speed)* as the port in the Device tab.
+
+### Built-up wings: sheeting, LE/TE stock and spar slots
+
+For cores that get skinned, open the wing panel's **Core** and **Spar slots** groups:
+
+![Core sections: sheeted with slots and LE/TE stock, obeche with a top slot, plain](docs/core.png)
+
+- **Sheeting** (top and bottom can differ, e.g. 1.5 mm balsa or 0.6 mm obeche): the core is cut
+  undersize by that much, so the finished wing has the airfoil's shape. Near the trailing edge the
+  airfoil gets thinner than the two skins together; the core stops where they meet, and the preview
+  tells you how far that is from the trailing edge (the skins are glued together there, or onto a TE strip).
+- **LE / TE stock**: cut the core back flat by this much (along the chord) to fit a leading-edge or
+  trailing-edge strip.
+- **Spar slots**: a rectangular slot for spar caps in the top and/or bottom surface, at a % of the
+  chord (the tip can use a different position), measured from the core surface, i.e. under the
+  skins. A slot that would leave less than 1 mm of foam, or that does not fit on the core, is refused.
+- Root and tip are built with the same number of points, so the slot and every edge run straight
+  from root to tip.
+
+`examples/sheeted_wing.toml` shows the same options for the command line.
 
 ### 2D shapes from DXF or SVG
 
@@ -108,8 +128,9 @@ matching root and tip points must lie on the wire at the same moment. open_HOWI:
    at either end of the part. Both carriages arrive together; the outer one may move faster.
 
 In machine coordinates the trailing edge faces the origin. The wire rises at X=0 (behind the
-foam), cuts in to the trailing edge, goes over the upper surface to the leading edge, back
-under the lower surface, out the entry slot, and returns to the origin. Start every job with
+foam), cuts in to the trailing edge, goes over the upper surface (through any spar slot) to the
+leading edge, back under the lower surface, up the trailing-edge face of a blunt or cut-back core,
+out the entry slot, and returns to the origin. Start every job with
 both carriages at the origin. Use **Set zero here** in the Device tab to choose where that is.
 
 ## Hardware
@@ -135,6 +156,7 @@ way. Switch the machine preset to *Units per minute (G94)* only if yours lacks G
 openhowi slice my-wing.howi.json -o my-wing.gcode   # slice a project saved from the app
 openhowi shape former.svg --span 80 --material "XPS extruded (blue/pink)"   # cut a DXF/SVG drawing
 openhowi wing examples/tapered_wing.toml --svg wing.svg   # TOML job file, explicit kerf values
+openhowi wing examples/sheeted_wing.toml             # sheeting, LE/TE stock and spar slots
 openhowi send wing.gcode --port /dev/ttyACM0         # stream to GRBL (COM3 etc. on Windows)
 openhowi send wing.gcode --dry-run                   # check a file without a machine
 openhowi naca 2412 -o naca2412.dat                   # write a NACA 4-digit airfoil
@@ -153,7 +175,7 @@ openhowi naca 2412 -o naca2412.dat                   # write a NACA 4-digit airf
 ## Roadmap
 
 - Arrange several parts in one block automatically; lead-ins from below or the side when shapes block each other
-- Spar slots, LE/TE cut-outs and sheeting allowance for wing cores
+- Several spars, joiner and servo-lead channels in wing cores
 - Homing/limit-aware placement and a block-size optimiser
 - Rotary-table (5th axis) support
 - Packaged desktop builds (one-click install on Windows/macOS)
@@ -168,7 +190,7 @@ ruff check src tests && ruff format --check src tests
 
 | Module | |
 |---|---|
-| `airfoil`, `geometry`, `wing` | Airfoil parsing/generation and 2D geometry (pure Python) |
+| `airfoil`, `geometry`, `wing`, `core` | Airfoil parsing/generation, 2D geometry, wing sections with sheeting, stock and spar slots |
 | `svgimport`, `dxfimport`, `curves`, `shapes` | Drawing import, curve flattening, outlines/holes, kerf and cut planning for 2D shapes |
 | `toolpath`, `gcode` | Placement, the 4-axis projection, feed timing and G-code output |
 | `material`, `presets`, `project`, `calibration` | Slicer layer: presets, kerf model, project slicing, kerf test |

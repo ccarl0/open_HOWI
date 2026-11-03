@@ -1,0 +1,40 @@
+# A sheeted wing core: 1.5 mm balsa skins, balsa LE and TE strips, carbon spar caps.
+#   openhowi wing examples/sheeted_wing.toml --svg preview.svg
+# All lengths in mm, speeds in mm/min, angles in degrees.
+
+title = "Sheeted wing core"
+
+[machine]
+tower_distance = 1000.0
+x_travel = 500.0
+y_travel = 250.0
+cut_feed = 180.0
+travel_feed = 600.0
+
+[wing]
+root_airfoil = "naca2412"
+root_chord = 240.0
+tip_chord = 170.0
+span = 600.0
+sweep = 20.0
+washout = 1.0
+root_kerf = 1.0
+tip_kerf = 1.2
+
+# Core: undersize for the skins, cut back for the LE/TE strips
+sheeting_top = 1.5          # skin thickness on top
+sheeting_bottom = 1.5       # skin thickness underneath
+le_stock = 6.0              # leading-edge strip, mm along the chord
+te_stock = 8.0              # trailing-edge strip (the core may stop earlier, where it gets thinner than the skins)
+
+# Spar slots for 6 x 1.5 mm carbon caps, under the skins, top and bottom
+spar_width = 6.0
+spar_depth_top = 1.5
+spar_depth_bottom = 1.5
+spar_position = 30.0        # % of chord from the leading edge
+# spar_position_tip = 30.0  # tip position if different
+
+[placement]
+root_offset = 200.0
+x_margin = 25.0
+y_offset = 40.0
