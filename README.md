@@ -32,7 +32,7 @@ the `openhowi` process. It works offline.
 
 | Tab | What it does |
 |---|---|
-| **Prepare** | Choose a **machine** and a **material** preset, then set up the part: root/tip airfoils (NACA or any `.dat` file), chords, span, sweep, washout. The part, the foam block and both carriage paths update live in 3D as you type. |
+| **Prepare** | Choose a **machine** and a **material** preset, then set up the part: a **wing panel** (root/tip airfoils from NACA or any `.dat` file, chords, span, sweep, washout) or a **2D shape** from a DXF or SVG drawing. The part, the foam block and both carriage paths update live in 3D as you type. |
 | **Preview** | Estimated time, cut lengths, kerf at each end, peak carriage speeds, the foam block you need and where to put it. Scrub or play back the cut with the timeline. Export G-code. |
 | **Device** | Connect over USB (or to the built-in **simulator**), live position, jog both carriages together or separately, home, unlock, set zero, wire on/off, start/pause/resume/stop the job, console. A **STOP** button (feed hold + reset, wire off) stays in the top bar while connected. |
 
@@ -51,6 +51,29 @@ Your presets and airfoil library are stored in `~/.config/openhowi` (Linux),
 Projects save as `.howi.json` files with the airfoils embedded, so you can share them.
 
 **Try it without a machine:** pick *Simulator (10× speed)* as the port in the Device tab.
+
+### 2D shapes from DXF or SVG
+
+Switch the part to **2D shape** and load a drawing: fuselage formers, ribs, letters, signs, any closed outline.
+
+![A fuselage former with three lightening holes, ready to cut](docs/shape.png)
+
+- **What is read.** SVG: paths (every command, including arcs), rect, circle, ellipse, polygon,
+  polyline, line, groups, transforms and `<use>` clones, in real units (`width="100mm"` + `viewBox`).
+  DXF (ASCII): LINE, LWPOLYLINE and POLYLINE with arc segments, CIRCLE, ARC, ELLIPSE, SPLINE and
+  blocks (INSERT), in the drawing's `$INSUNITS`. Text must be converted to outlines first
+  (Inkscape: *Path → Object to Path*); the app tells you what it skipped.
+- **Outlines and holes.** Loose lines and arcs are joined into closed outlines (gaps up to 0.2 mm by
+  default). An outline inside another becomes a hole; a shape inside a hole is a separate part again.
+- **Scale, rotate, mirror**, set the **length along the wire**, and optionally **taper** the shape
+  towards the tip face (tip scale and shift). The app refuses tapers that are too steep for where the part sits.
+- **Cut planning.** Every shape is entered from behind the block (X = 0) along a horizontal lead-in
+  that avoids the other shapes. Holes are cut on the way round the outline, through the shortest
+  straight "bridge" cut from the outline. The wire cannot be lifted, so each hole leaves one
+  kerf-wide slit in the part to glue; the preview says how many. Holes narrower than the kerf are skipped.
+
+Try `examples/shapes/former.svg` (one shape, three holes) and `examples/shapes/star_and_d.dxf`
+(two shapes, a block insert and an outline drawn as separate lines and an arc).
 
 **Run it on a Raspberry Pi** at the machine and use it from another computer on your network:
 `openhowi gui --host 0.0.0.0 --no-browser`. Anyone who can reach that address can move the
@@ -110,6 +133,7 @@ way. Switch the machine preset to *Units per minute (G94)* only if yours lacks G
 
 ```bash
 openhowi slice my-wing.howi.json -o my-wing.gcode   # slice a project saved from the app
+openhowi shape former.svg --span 80 --material "XPS extruded (blue/pink)"   # cut a DXF/SVG drawing
 openhowi wing examples/tapered_wing.toml --svg wing.svg   # TOML job file, explicit kerf values
 openhowi send wing.gcode --port /dev/ttyACM0         # stream to GRBL (COM3 etc. on Windows)
 openhowi send wing.gcode --dry-run                   # check a file without a machine
@@ -128,7 +152,7 @@ openhowi naca 2412 -o naca2412.dat                   # write a NACA 4-digit airf
 
 ## Roadmap
 
-- DXF/SVG import for 2D shapes (fuselage formers, letters, signs), several parts per block
+- Arrange several parts in one block automatically; lead-ins from below or the side when shapes block each other
 - Spar slots, LE/TE cut-outs and sheeting allowance for wing cores
 - Homing/limit-aware placement and a block-size optimiser
 - Rotary-table (5th axis) support
@@ -145,6 +169,7 @@ ruff check src tests && ruff format --check src tests
 | Module | |
 |---|---|
 | `airfoil`, `geometry`, `wing` | Airfoil parsing/generation and 2D geometry (pure Python) |
+| `svgimport`, `dxfimport`, `curves`, `shapes` | Drawing import, curve flattening, outlines/holes, kerf and cut planning for 2D shapes |
 | `toolpath`, `gcode` | Placement, the 4-axis projection, feed timing and G-code output |
 | `material`, `presets`, `project`, `calibration` | Slicer layer: presets, kerf model, project slicing, kerf test |
 | `simulator`, `controller`, `sender` | Simulated GRBL, the threaded device controller, the CLI streamer |

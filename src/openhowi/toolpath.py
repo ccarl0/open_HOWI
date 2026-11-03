@@ -84,20 +84,26 @@ class WingLayout:
     uv: list[Point]
 
 
-def layout_wing(wing: WingPanel, machine: Machine, placement: Placement) -> WingLayout:
+def span_positions(span: float, machine: Machine, placement: Placement) -> tuple[float, float]:
+    """Positions along the wire (from the XY carriage) of a part's root and tip faces."""
     d = machine.tower_distance
     if placement.root_side == "xy":
         z_root = placement.root_offset
-        z_tip = z_root + wing.span
+        z_tip = z_root + span
     else:
         z_root = d - placement.root_offset
-        z_tip = z_root - wing.span
+        z_tip = z_root - span
     if not (0.0 <= z_root <= d and 0.0 <= z_tip <= d):
         raise PlacementError(
-            f"a {wing.span:g} mm panel {placement.root_offset:g} mm from the {placement.root_side.upper()} "
+            f"a {span:g} mm long part {placement.root_offset:g} mm from the {placement.root_side.upper()} "
             f"carriage does not fit between carriages {d:g} mm apart"
         )
+    return z_root, z_tip
 
+
+def layout_wing(wing: WingPanel, machine: Machine, placement: Placement) -> WingLayout:
+    d = machine.tower_distance
+    z_root, z_tip = span_positions(wing.span, machine, placement)
     xy, uv = project_to_towers(wing.root_contour(), z_root, wing.tip_contour(), z_tip, d)
 
     # Mirror X so the trailing edge faces the origin and the wire enters from behind it.

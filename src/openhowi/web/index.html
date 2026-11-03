@@ -73,7 +73,8 @@
           </div>
         </section>
         <section class="card">
-          <h2>Part <span class="muted">Wing panel</span></h2>
+          <h2>Part</h2>
+          <div class="segmented" id="part-type" role="radiogroup" aria-label="Part type"></div>
           <div class="field">
             <label for="project-title">Name</label>
             <input id="project-title" type="text" placeholder="Wing panel">
@@ -227,5 +228,6 @@
 
   <input type="file" id="file-project" accept=".json,.howi" hidden>
   <input type="file" id="file-airfoil" accept=".dat,.txt" hidden>
+  <input type="file" id="file-drawing" accept=".svg,.dxf" hidden>
 </body>
 </html>

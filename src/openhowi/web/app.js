@@ -57,7 +57,7 @@ const slug = (s) => (s || 'part').toLowerCase().replace(/[^a-z0-9]+/g, '-').repl
 
 const state = {
   info: null, presets: { machine: [], material: [] }, airfoils: { naca: [], library: [] },
-  project: null, result: null, sliceSeq: 0, sliceTimer: null, tab: 'prepare',
+  project: null, result: null, sliceSeq: 0, sliceTimer: null, tab: 'prepare', stash: {}, drawingInfo: null,
   device: { connected: false, status: { state: 'Disconnected' }, job: null, lastLog: 0, polling: false },
   scrub: { t: Infinity, playing: false },
 };
@@ -66,15 +66,35 @@ const state = {
 
 function withDefaults(project) {
   const d = state.info.default_project;
+  const type = project.part?.type || 'wing';
   return {
     ...clone(d), ...project,
     machine: { ...d.machine, ...project.machine }, material: { ...d.material, ...project.material },
-    part: { ...d.part, ...project.part }, placement: { ...d.placement, ...project.placement },
+    part: { ...clone(state.info.default_parts[type] || {}), ...project.part },
+    placement: { ...clone(state.info.default_placements[type] || {}), ...project.placement },
   };
 }
 
 function setProject(project) {
   state.project = withDefaults(project);
+  state.stash = {};
+  state.drawingInfo = null;
+  renderSettings();
+  changed();
+}
+
+const partType = () => state.project.part.type || 'wing';
+
+function switchPartType(type) {
+  const current = partType();
+  if (type === current) return;
+  // Keep the other part's settings for this session, so switching back restores them.
+  state.stash[current] = { part: clone(state.project.part), placement: clone(state.project.placement) };
+  const next = state.stash[type] || {
+    part: clone(state.info.default_parts[type]), placement: clone(state.info.default_placements[type]),
+  };
+  state.project.part = next.part;
+  state.project.placement = next.placement;
   renderSettings();
   changed();
 }
@@ -202,6 +222,50 @@ function pickAirfoilFile() {
   });
 }
 
+function drawingSummary(info) {
+  if (!info) return '';
+  const [w, h] = info.size;
+  const parts = [`${info.shapes} shape${info.shapes === 1 ? '' : 's'}`, `${info.holes} hole${info.holes === 1 ? '' : 's'}`];
+  return `${parts.join(', ')} · ${num(w, 1)} × ${num(h, 1)} mm`;
+}
+
+function drawingField(f, value, set) {
+  const box = el('div', { class: `drawing-box${value ? '' : ' empty'}` },
+    el('div', { class: 'name' }, value ? value.name : 'No drawing loaded'),
+    el('div', { class: 'meta', id: 'drawing-meta' }, value ? drawingSummary(state.drawingInfo) : 'SVG or DXF with closed outlines'));
+  const button = el('button', { type: 'button', class: value ? '' : 'primary' }, value ? 'Replace…' : 'Load DXF or SVG…');
+  button.addEventListener('click', async () => {
+    const picked = await pickDrawingFile();
+    if (!picked) return;
+    if (!state.project.title) state.project.title = picked.name.replace(/\.[^.]+$/, '');
+    set(picked);
+    renderSettings();
+  });
+  box.append(button);
+  return el('div', { class: 'field drawing', title: f.help }, box);
+}
+
+function pickDrawingFile() {
+  return new Promise((resolve) => {
+    const input = $('#file-drawing');
+    input.value = '';
+    input.onchange = async () => {
+      const file = input.files[0];
+      if (!file) { resolve(null); return; }
+      try {
+        const data = await file.text();
+        const info = await api('/api/shapes/inspect', { filename: file.name, data });
+        state.drawingInfo = info;
+        resolve({ name: file.name, format: info.format, data });
+      } catch (err) {
+        alert(`Could not load ${file.name}: ${err.message}`);
+        resolve(null);
+      }
+    };
+    input.click();
+  });
+}
+
 function fieldEl(f, value, set, showHelp) {
   const id = `f${uid++}`;
   let input;
@@ -211,6 +275,12 @@ function fieldEl(f, value, set, showHelp) {
     input.addEventListener('change', () => set(input.value));
   } else if (f.type === 'airfoil') {
     input = airfoilInput(id, f, value, set);
+  } else if (f.type === 'drawing') {
+    return drawingField(f, value, set);
+  } else if (f.type === 'bool') {
+    input = el('input', { id, type: 'checkbox' });
+    input.checked = Boolean(value);
+    input.addEventListener('change', () => set(input.checked));
   } else if (f.type === 'text') {
     input = el('input', { id, type: 'text', spellcheck: 'false' });
     input.value = value ?? '';
@@ -219,7 +289,8 @@ function fieldEl(f, value, set, showHelp) {
     input = numberInput(id, f, value, set);
   }
   const control = f.unit ? el('div', { class: 'unit-wrap' }, input, el('span', { class: 'unit' }, f.unit)) : input;
-  const row = el('div', { class: `field${f.type === 'airfoil' ? ' airfoil' : ''}`, title: f.help },
+  const kind = { airfoil: ' airfoil', bool: ' bool' }[f.type] || '';
+  const row = el('div', { class: `field${kind}`, title: f.help },
     el('label', { for: id }, f.label), control);
   if (showHelp && f.help) row.append(el('div', { class: 'help' }, f.help));
   return row;
@@ -238,15 +309,26 @@ function buildForm(container, fields, values, onChange, showHelp = false) {
 }
 
 function renderPartForm() {
-  buildForm($('#part-form'), state.info.schema.part, state.project.part, (k, v) => {
+  buildForm($('#part-form'), state.info.schema.part[partType()] || [], state.project.part, (k, v) => {
     state.project.part[k] = v; changed();
   });
 }
 
+function renderPartType() {
+  const box = $('#part-type');
+  box.replaceChildren(...state.info.part_types.map((t) => {
+    const b = el('button', { type: 'button', role: 'radio', 'aria-checked': String(t.type === partType()) }, t.label);
+    b.addEventListener('click', () => switchPartType(t.type));
+    return b;
+  }));
+}
+
 function renderSettings() {
+  renderPartType();
   $('#project-title').value = state.project.title || '';
+  $('#project-title').placeholder = partType() === 'wing' ? 'Wing panel' : '2D shape';
   renderPartForm();
-  buildForm($('#placement-form'), state.info.schema.placement, state.project.placement, (k, v) => {
+  buildForm($('#placement-form'), state.info.schema.placement[partType()] || [], state.project.placement, (k, v) => {
     state.project.placement[k] = v; changed();
   });
   const power = state.project.material.wire_power;
@@ -330,18 +412,31 @@ function renderThumbs() {
   box.replaceChildren();
   const r = state.result;
   if (!r) return;
-  for (const [label, pts, name] of [['Root', r.part.root, r.stats.airfoils.root], ['Tip', r.part.tip, r.stats.airfoils.tip]]) {
-    const xs = pts.map((p) => p[0]); const ys = pts.map((p) => p[1]);
+  const p = state.project.part;
+  let faces;
+  if (r.kind === 'wing') {
+    faces = [['Root', 'root', r.stats.airfoils.root], ['Tip', 'tip', r.stats.airfoils.tip]];
+  } else {
+    const tapered = (p.tip_scale ?? 100) !== 100 || p.tip_offset_x || p.tip_offset_y;
+    faces = tapered ? [['Root', 'root', ''], ['Tip', 'tip', '']] : [['Shape', 'root', r.stats.drawing.name]];
+  }
+  for (const [label, face, name] of faces) {
+    const rings = r.part.solids.flatMap((sd) => [sd[face].outer, ...sd[face].holes]);
+    const pts = rings.flat();
+    const xs = pts.map((q) => q[0]); const ys = pts.map((q) => q[1]);
     const x0 = Math.min(...xs); const x1 = Math.max(...xs); const y0 = Math.min(...ys); const y1 = Math.max(...ys);
-    // Leading edge on the left, as airfoils are usually drawn.
-    const d = pts.map((p, i) => `${i ? 'L' : 'M'}${(x1 - p[0]).toFixed(2)} ${(y1 - p[1]).toFixed(2)}`).join(' ') + 'Z';
+    // Airfoils are drawn leading edge left, as usual; drawings as they appear in the machine.
+    const fx = r.kind === 'wing' ? (x) => x1 - x : (x) => x - x0;
+    const d = rings.map((ring) => ring.map((q, i) => `${i ? 'L' : 'M'}${fx(q[0]).toFixed(2)} ${(y1 - q[1]).toFixed(2)}`).join(' ') + 'Z').join(' ');
     const svg = document.createElementNS('http://www.w3.org/2000/svg', 'svg');
-    svg.setAttribute('viewBox', `${-2} ${-2} ${x1 - x0 + 4} ${y1 - y0 + 4}`);
+    const pad = Math.max(x1 - x0, y1 - y0) * 0.02;
+    svg.setAttribute('viewBox', `${-pad} ${-pad} ${x1 - x0 + 2 * pad} ${y1 - y0 + 2 * pad}`);
     svg.setAttribute('preserveAspectRatio', 'xMidYMid meet');
     const path = document.createElementNS('http://www.w3.org/2000/svg', 'path');
     path.setAttribute('d', d);
+    path.setAttribute('fill-rule', 'evenodd');
     svg.append(path);
-    box.append(el('figure', {}, svg, el('figcaption', {}, `${label} · ${name}`)));
+    box.append(el('figure', {}, svg, el('figcaption', {}, name ? `${label} · ${name}` : label)));
   }
 }
 
@@ -365,11 +460,17 @@ function renderResult() {
   const s = r.stats; const a = r.machine.axis_letters;
   const xy = a.slice(0, 2); const uv = a.slice(2);
   const slow = s.speed_ratio.tip < s.speed_ratio.root ? 'tip' : 'root';
+  if (s.drawing) {
+    state.drawingInfo = s.drawing;
+    const meta = $('#drawing-meta');
+    if (meta) meta.textContent = drawingSummary(s.drawing);
+  }
   const rows = [
     ['Estimated time', fmtTime(s.time_s)],
+    ...(s.drawing ? [['Drawing', drawingSummary(s.drawing)]] : []),
     ['Cut length', `${xy} ${num(s.cut_length.XY, 0)} · ${uv} ${num(s.cut_length.UV, 0)} mm`],
     ['Kerf', `root ${num(s.kerf.root, 2)} · tip ${num(s.kerf.tip, 2)} mm`],
-    ['Slower end', `${slow}, ${Math.round(s.speed_ratio[slow] * 100)} % of cut speed`],
+    ...(s.speed_ratio[slow] < 0.999 ? [['Slower end', `${slow}, ${Math.round(s.speed_ratio[slow] * 100)} % of cut speed`]] : []),
     ['Peak carriage speed', `${num(s.peak_speed.XY, 0)} · ${num(s.peak_speed.UV, 0)} mm/min`],
     [`${xy} range`, `X ${num(s.extents.XY[2], 0)} · Y ${num(s.extents.XY[3], 0)} mm`],
     [`${uv} range`, `X ${num(s.extents.UV[2], 0)} · Y ${num(s.extents.UV[3], 0)} mm`],
@@ -588,7 +689,7 @@ function startCurrentJob() {
   const r = state.result;
   if (!r) return;
   const b = r.block;
-  startJob(r.gcode, state.project.title || 'Wing panel',
+  startJob(r.gcode, state.project.title || (partType() === 'wing' ? 'Wing panel' : '2D shape'),
     `Estimated time ${fmtTime(r.stats.time_s)}. Foam ${num(b.x1 - b.x0, 0)} × ${num(b.y1 - b.y0, 0)} × `
     + `${num(b.z1 - b.z0, 0)} mm, rear face before X ${num(state.project.placement.x_margin, 0)} mm.`);
 }

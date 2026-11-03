@@ -34,7 +34,9 @@ def test_default_project_slices():
     assert len(path["t"]) == len(path["xy"]) == len(path["uv"]) == len(path["cut"])
     assert path["t"] == sorted(path["t"])
     assert path["t"][-1] == pytest.approx(data["stats"]["time_s"], abs=0.1)
-    assert len(data["part"]["root"]) == len(data["part"]["tip"])
+    (solid,) = data["part"]["solids"]
+    assert len(solid["root"]["outer"]) == len(solid["tip"]["outer"])
+    assert solid["root"]["holes"] == []
     json.dumps(data)  # must be JSON serialisable for the GUI
 
 

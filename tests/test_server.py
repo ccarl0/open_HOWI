@@ -124,3 +124,18 @@ def test_http_same_origin_write(server):
     assert status == 200 and body["ok"]
     status, body, _ = request(server, "POST", "/api/device/stop", {}, headers=origin)
     assert status == 400 and body["error"] == "not connected"
+
+
+def test_part_types_and_shape_inspect(app):
+    info = app.handle("GET", "/api/info", {})
+    assert [t["type"] for t in info["part_types"]] == ["wing", "shape"]
+    assert {"wing", "shape"} == set(info["schema"]["part"]) == set(info["default_parts"])
+    svg = '<svg xmlns="http://www.w3.org/2000/svg" width="10mm" height="10mm" viewBox="0 0 10 10"><rect width="10" height="10"/></svg>'
+    r = app.handle("POST", "/api/shapes/inspect", {"filename": "sq.svg", "data": svg})
+    assert r["shapes"] == 1 and r["size"] == [10, 10]
+    with pytest.raises(ApiError, match="no closed outlines"):
+        app.handle(
+            "POST",
+            "/api/shapes/inspect",
+            {"filename": "empty.svg", "data": '<svg xmlns="http://www.w3.org/2000/svg"/>'},
+        )

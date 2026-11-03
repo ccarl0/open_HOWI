@@ -260,3 +260,15 @@ dialog::backdrop { background: rgb(10 14 20 / 45%); }
   .legend { display: none; }
   .field { grid-template-columns: 1fr 130px; }
 }
+
+/* Part type switch, checkbox and drawing fields ----------------------------------------- */
+.segmented { display: flex; gap: 2px; background: var(--panel-2); border: 1px solid var(--border); border-radius: 8px; padding: 3px; margin-bottom: 10px; }
+.segmented button { flex: 1; border: 0; background: transparent; color: var(--muted); padding: 5px 8px; border-radius: 6px; }
+.segmented button[aria-checked="true"] { background: var(--panel); color: var(--text); font-weight: 600; box-shadow: var(--shadow); }
+.field.bool input { justify-self: end; width: 18px; height: 18px; accent-color: var(--accent); }
+.field.drawing { grid-template-columns: 1fr; }
+.drawing-box { display: flex; flex-direction: column; gap: 6px; background: var(--panel-2); border: 1px dashed var(--border); border-radius: 6px; padding: 8px 10px; }
+.drawing-box .name { font-weight: 600; word-break: break-all; }
+.drawing-box .meta { color: var(--muted); font-size: 12.5px; }
+.drawing-box button { align-self: flex-start; }
+.drawing-box.empty .name { font-weight: 400; color: var(--muted); }

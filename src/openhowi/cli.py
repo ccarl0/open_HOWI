@@ -6,6 +6,7 @@ from __future__ import annotations
 import argparse
 import sys
 from pathlib import Path
+from typing import Any
 
 from . import __version__
 from .airfoil import AirfoilError, naca4
@@ -135,9 +136,16 @@ def cmd_slice(args: argparse.Namespace) -> int:
     except (OSError, json.JSONDecodeError, SliceError) as exc:
         return _err(str(exc))
     output = Path(args.output or Path(args.project).name.removesuffix(".json").removesuffix(".howi") + ".gcode")
+    return _report(result, output)
+
+
+def _report(result: Any, output: Path) -> int:
     output.write_text(result.gcode, encoding="utf-8")
     stats = result.data["stats"]
     mins, secs = divmod(round(stats["time_s"]), 60)
+    if "drawing" in stats:
+        d = stats["drawing"]
+        print(f"{d['shapes']} shape(s), {d['holes']} hole(s), {d['size'][0]:g} x {d['size'][1]:g} mm")
     print(
         f"Estimated time {mins} min {secs:02d} s, kerf root {stats['kerf']['root']:.2f} / tip {stats['kerf']['tip']:.2f} mm"
     )
@@ -145,6 +153,52 @@ def cmd_slice(args: argparse.Namespace) -> int:
         print(f"warning: {warning}")
     print(f"Wrote {output}")
     return 0
+
+
+def cmd_shape(args: argparse.Namespace) -> int:
+    import copy
+
+    from .presets import PresetStore
+    from .project import DEFAULT_PARTS, DEFAULT_PLACEMENTS, SliceError, default_project, slice_project
+    from .shapes import format_for
+
+    path = Path(args.drawing)
+    try:
+        fmt = format_for(path.name)
+        data = path.read_text(encoding="utf-8", errors="replace")
+    except (OSError, ValueError) as exc:
+        return _err(str(exc))
+
+    project = default_project()
+    store = PresetStore()
+    for kind, name in (("machine", args.machine), ("material", args.material)):
+        if not name:
+            continue
+        presets = store.list(kind)
+        match = next((preset for preset in presets if preset["name"] == name), None)
+        if match is None:
+            names = ", ".join(repr(preset["name"]) for preset in presets)
+            return _err(f"no {kind} preset named {name!r}; choose one of {names}")
+        project[kind] = copy.deepcopy(match["values"])
+        project[f"{kind}_preset"] = name
+    project["title"] = path.stem
+    project["part"] = copy.deepcopy(DEFAULT_PARTS["shape"]) | {
+        "source": {"name": path.name, "format": fmt, "data": data},
+        "span": args.span,
+        "scale": args.scale,
+        "rotate": args.rotate,
+        "mirror": args.mirror,
+        "tip_scale": args.tip_scale,
+    }
+    placement = {"root_offset": args.root_offset, "x_margin": args.x_margin, "y_offset": args.y_offset}
+    project["placement"] = copy.deepcopy(DEFAULT_PLACEMENTS["shape"]) | {
+        k: v for k, v in placement.items() if v is not None
+    }
+    try:
+        result = slice_project(project)
+    except SliceError as exc:
+        return _err(str(exc))
+    return _report(result, Path(args.output or path.with_suffix(".gcode").name))
 
 
 def build_parser() -> argparse.ArgumentParser:
@@ -167,6 +221,21 @@ def build_parser() -> argparse.ArgumentParser:
     p.add_argument("project")
     p.add_argument("-o", "--output", help="G-code file to write (default: <project name>.gcode)")
     p.set_defaults(func=cmd_slice)
+
+    p = sub.add_parser("shape", help="cut the closed outlines of an SVG or DXF drawing")
+    p.add_argument("drawing", help="an .svg or .dxf file")
+    p.add_argument("-o", "--output", help="G-code file to write (default: <drawing name>.gcode)")
+    p.add_argument("--span", type=float, default=100.0, help="length of the part along the wire, mm (default 100)")
+    p.add_argument("--scale", type=float, default=100.0, help="scale the drawing, %% (default 100)")
+    p.add_argument("--rotate", type=float, default=0.0, help="rotate the drawing, degrees")
+    p.add_argument("--mirror", action="store_true", help="mirror the drawing left-right")
+    p.add_argument("--tip-scale", type=float, default=100.0, help="size of the tip face, %% (taper)")
+    p.add_argument("--root-offset", type=float, help="distance of the part from the XY carriage, mm")
+    p.add_argument("--x-margin", type=float, help="machine X of the rear of the cut, mm")
+    p.add_argument("--y-offset", type=float, help="machine Y of the bottom of the shape, mm")
+    p.add_argument("--machine", help="machine preset name (default: the first built-in one)")
+    p.add_argument("--material", help="material preset name (default: the first built-in one)")
+    p.set_defaults(func=cmd_shape)
 
     p = sub.add_parser("wing", help="generate G-code for a wing panel described in a TOML file")
     p.add_argument("config", help="job file, see examples/tapered_wing.toml")

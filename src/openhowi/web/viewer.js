@@ -188,32 +188,11 @@ export class Viewer {
     this.partGroup.add(new THREE.LineSegments(new THREE.EdgesGeometry(box),
       new THREE.LineBasicMaterial({ color: this.colors.block, transparent: true, opacity: 0.7 })));
 
-    // Part: loft between the root and tip sections, plus end caps
-    const { root, tip, z_root: zr, z_tip: zt } = r.part;
-    const n = root.length;
-    const verts = [];
-    for (const [pts, z] of [[root, zr], [tip, zt]]) for (const [x, y] of pts) verts.push(x, y, z);
-    const idx = [];
-    for (let i = 0; i < n; i++) {
-      const j = (i + 1) % n;
-      idx.push(i, j, n + i, j, n + j, n + i);
-    }
-    const side = new THREE.BufferGeometry();
-    side.setAttribute('position', new THREE.Float32BufferAttribute(verts, 3));
-    side.setIndex(idx);
-    side.computeVertexNormals();
-    const partMat = new THREE.MeshStandardMaterial({ color: this.colors.part, roughness: 0.85, side: THREE.DoubleSide });
-    this.partGroup.add(new THREE.Mesh(side, partMat));
-    for (const [pts, z] of [[root, zr], [tip, zt]]) {
-      const contour = pts.map(([x, y]) => new THREE.Vector2(x, y));
-      if (contour.length > 2 && contour[0].distanceTo(contour[contour.length - 1]) < 1e-6) contour.pop();
-      const tris = THREE.ShapeUtils.triangulateShape(contour, []);
-      const cap = new THREE.BufferGeometry();
-      cap.setAttribute('position', new THREE.Float32BufferAttribute(contour.flatMap((p) => [p.x, p.y, z]), 3));
-      cap.setIndex(tris.flat());
-      cap.computeVertexNormals();
-      this.partGroup.add(new THREE.Mesh(cap, partMat));
-    }
+    // Part: each solid is a loft between its root and tip faces (outline and holes), plus end caps
+    const partMat = new THREE.MeshStandardMaterial({
+      color: this.colors.part, roughness: 0.85, side: THREE.DoubleSide, flatShading: r.kind === 'shape',
+    });
+    for (const solid of r.part.solids) this.addSolid(solid, r.part.z_root, r.part.z_tip, partMat);
 
     // Carriage paths: faint full path, bright overlay for the part already cut
     const p = r.path;
@@ -228,6 +207,39 @@ export class Viewer {
       this.overlays.push(done);
     }
     this.setProgress(p.t.length - 1, 1);
+  }
+
+  addSolid(solid, zr, zt, material) {
+    // Rings without a repeated end point; root and tip rings are index-matched.
+    const ring = (pts) => (pts.length > 2 && pts[0][0] === pts.at(-1)[0] && pts[0][1] === pts.at(-1)[1] ? pts.slice(0, -1) : pts);
+    const rootRings = [solid.root.outer, ...solid.root.holes].map(ring);
+    const tipRings = [solid.tip.outer, ...solid.tip.holes].map(ring);
+    rootRings.forEach((rootRing, k) => {
+      const tipRing = tipRings[k];
+      const n = rootRing.length;
+      const verts = [];
+      for (const [pts, z] of [[rootRing, zr], [tipRing, zt]]) for (const [x, y] of pts) verts.push(x, y, z);
+      const idx = [];
+      for (let i = 0; i < n; i++) {
+        const j = (i + 1) % n;
+        idx.push(i, j, n + i, j, n + j, n + i);
+      }
+      const side = new THREE.BufferGeometry();
+      side.setAttribute('position', new THREE.Float32BufferAttribute(verts, 3));
+      side.setIndex(idx);
+      side.computeVertexNormals();
+      this.partGroup.add(new THREE.Mesh(side, material));
+    });
+    for (const [rings, z] of [[rootRings, zr], [tipRings, zt]]) {
+      const [outer, ...holes] = rings.map((pts) => pts.map(([x, y]) => new THREE.Vector2(x, y)));
+      const tris = THREE.ShapeUtils.triangulateShape(outer, holes);
+      const all = [outer, ...holes].flat();
+      const cap = new THREE.BufferGeometry();
+      cap.setAttribute('position', new THREE.Float32BufferAttribute(all.flatMap((p) => [p.x, p.y, z]), 3));
+      cap.setIndex(tris.flat());
+      cap.computeVertexNormals();
+      this.partGroup.add(new THREE.Mesh(cap, material));
+    }
   }
 
   // Show the cut up to segment `i` (index into path arrays), `frac` of the way into it.

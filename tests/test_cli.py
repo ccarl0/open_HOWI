@@ -42,3 +42,16 @@ def test_send_dry_run(tmp_path, capsys):
     gcode.write_text("(comment)\nG21\nG1 X1 Y1 U1 V1 F100\n")
     assert main(["send", str(gcode), "--dry-run"]) == 0
     assert "2 lines" in capsys.readouterr().out
+
+
+def test_shape_command(tmp_path, capsys, monkeypatch):
+    monkeypatch.setenv("OPENHOWI_CONFIG_DIR", str(tmp_path / "cfg"))
+    drawing = EXAMPLE.parent / "shapes" / "former.svg"
+    out = tmp_path / "former.gcode"
+    assert main(["shape", str(drawing), "-o", str(out), "--span", "80", "--material", "XPS extruded (blue/pink)"]) == 0
+    text = capsys.readouterr().out
+    assert "1 shape(s), 3 hole(s), 100 x 100 mm" in text
+    assert "material: XPS extruded" in out.read_text()
+    assert main(["shape", str(drawing), "--machine", "nope"]) == 1
+    assert "no machine preset named 'nope'" in capsys.readouterr().err
+    assert main(["shape", str(tmp_path / "x.pdf")]) == 1

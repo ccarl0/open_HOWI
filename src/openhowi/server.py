@@ -35,7 +35,18 @@ from .presets import (
     machine_from_values,
     material_from_values,
 )
-from .project import PART_FIELDS, PLACEMENT_FIELDS, SliceError, default_project, resolve_airfoil, slice_project
+from .project import (
+    DEFAULT_PARTS,
+    DEFAULT_PLACEMENTS,
+    PART_SCHEMAS,
+    PART_TYPES,
+    PLACEMENT_SCHEMAS,
+    SliceError,
+    default_project,
+    inspect_drawing,
+    resolve_airfoil,
+    slice_project,
+)
 from .toolpath import PlacementError
 
 MAX_BODY = 8 * 1024 * 1024
@@ -68,6 +79,7 @@ class App:
             ("GET", "/api/airfoils/file"): self.airfoil_file,
             ("POST", "/api/airfoils"): self.add_airfoil,
             ("POST", "/api/airfoil/shape"): self.airfoil_shape,
+            ("POST", "/api/shapes/inspect"): self.inspect_shape,
             ("POST", "/api/slice"): self.slice,
             ("POST", "/api/calibration/kerf"): self.kerf_test,
             ("GET", "/api/device/ports"): lambda q: {"ports": list_ports()},
@@ -106,9 +118,12 @@ class App:
             "schema": {
                 "machine": MACHINE_FIELDS,
                 "material": MATERIAL_FIELDS,
-                "part": PART_FIELDS,
-                "placement": PLACEMENT_FIELDS,
+                "part": PART_SCHEMAS,
+                "placement": PLACEMENT_SCHEMAS,
             },
+            "part_types": PART_TYPES,
+            "default_parts": DEFAULT_PARTS,
+            "default_placements": DEFAULT_PLACEMENTS,
             "default_project": default_project(),
             "naca": NACA_CODES,
         }
@@ -141,6 +156,9 @@ class App:
     def airfoil_shape(self, body: dict[str, Any]) -> dict[str, Any]:
         foil = resolve_airfoil(body.get("source")).normalized()
         return {"name": foil.name, "points": [[round(x, 5), round(y, 5)] for x, y in foil.points]}
+
+    def inspect_shape(self, body: dict[str, Any]) -> dict[str, Any]:
+        return inspect_drawing(_str(body, "filename"), _str(body, "data"))
 
     def slice(self, body: dict[str, Any]) -> dict[str, Any]:
         result = slice_project(body.get("project") or {})

@@ -118,3 +118,64 @@ def offset_polyline(points: Sequence[Point], d: float, miter_limit: float = 4.0)
                 scale = min(1.0 / cos_half, miter_limit)
         out.append((p[0] + n[0] * d * scale, p[1] + n[1] * d * scale))
     return out
+
+
+def offset_polygon(points: Sequence[Point], d: float, miter_limit: float = 4.0) -> list[Point]:
+    """Offset a closed polygon (first point not repeated) by ``d`` to the left of its direction of travel.
+
+    Point count and order are preserved, so index-matched root/tip outlines stay matched.
+    """
+    n = len(points)
+    if n < 3:
+        raise ValueError("polygon needs at least three points")
+    if d == 0.0:
+        return [(float(x), float(y)) for x, y in points]
+    normals: list[Point] = []
+    for i in range(n):
+        a, b = points[i], points[(i + 1) % n]
+        length = distance(a, b)
+        if length == 0.0:
+            raise ValueError("cannot offset a polygon with repeated points")
+        normals.append(((a[1] - b[1]) / length, (b[0] - a[0]) / length))
+    out: list[Point] = []
+    for i, p in enumerate(points):
+        n1, n2 = normals[i - 1], normals[i]
+        sx, sy = n1[0] + n2[0], n1[1] + n2[1]
+        norm = math.hypot(sx, sy)
+        if norm < 1e-12:
+            nx, ny, scale = n1[0], n1[1], 1.0
+        else:
+            nx, ny = sx / norm, sy / norm
+            scale = min(1.0 / (nx * n1[0] + ny * n1[1]), miter_limit)
+        out.append((p[0] + nx * d * scale, p[1] + ny * d * scale))
+    return out
+
+
+def point_in_polygon(p: Point, polygon: Sequence[Point]) -> bool:
+    """Even-odd ray casting test."""
+    x, y = p
+    inside = False
+    n = len(polygon)
+    for i in range(n):
+        x1, y1 = polygon[i]
+        x2, y2 = polygon[(i + 1) % n]
+        if (y1 > y) != (y2 > y) and x < x1 + (y - y1) * (x2 - x1) / (y2 - y1):
+            inside = not inside
+    return inside
+
+
+def _orient(a: Point, b: Point, c: Point) -> float:
+    return (b[0] - a[0]) * (c[1] - a[1]) - (b[1] - a[1]) * (c[0] - a[0])
+
+
+def segments_cross(p1: Point, p2: Point, q1: Point, q2: Point) -> bool:
+    """True when the two segments intersect at a point interior to both (touching ends do not count)."""
+    d1, d2 = _orient(q1, q2, p1), _orient(q1, q2, p2)
+    d3, d4 = _orient(p1, p2, q1), _orient(p1, p2, q2)
+    return ((d1 > 0 > d2) or (d1 < 0 < d2)) and ((d3 > 0 > d4) or (d3 < 0 < d4))
+
+
+def bounds(points: Sequence[Point]) -> tuple[float, float, float, float]:
+    xs = [p[0] for p in points]
+    ys = [p[1] for p in points]
+    return min(xs), min(ys), max(xs), max(ys)
