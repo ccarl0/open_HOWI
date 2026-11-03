@@ -7,7 +7,7 @@ from dataclasses import dataclass, field
 
 from .geometry import Point
 from .machine import Machine
-from .wing import WingPanel, apply_kerf, project_to_towers
+from .wing import WingPanel, cut_path, project_to_towers
 
 
 class PlacementError(ValueError):
@@ -86,6 +86,9 @@ class WingLayout:
     """Outline of the finished (sheeted) airfoil at the root, for display."""
     tip_skin: list[Point] = field(default_factory=list)
     cutbacks: dict[str, float] = field(default_factory=dict)
+    root_holes: list[list[Point]] = field(default_factory=list)
+    """Servo channels at the root (finished size), for display."""
+    tip_holes: list[list[Point]] = field(default_factory=list)
     """How far the cores stop short of the airfoil's leading/trailing edges (mm)."""
 
 
@@ -109,10 +112,10 @@ def span_positions(span: float, machine: Machine, placement: Placement) -> tuple
 def layout_wing(wing: WingPanel, machine: Machine, placement: Placement) -> WingLayout:
     d = machine.tower_distance
     z_root, z_tip = span_positions(wing.span, machine, placement)
-    root_core, tip_core, cutbacks = wing.cores()
-    xy, uv = project_to_towers(
-        apply_kerf(root_core, wing.root_kerf), z_root, apply_kerf(tip_core, wing.tip_kerf), z_tip, d
-    )
+    sections = wing.sections()
+    root_cut = cut_path(sections.root, sections.root_channels, wing.root_kerf)
+    tip_cut = cut_path(sections.tip, sections.tip_channels, wing.tip_kerf)
+    xy, uv = project_to_towers(root_cut, z_root, tip_cut, z_tip, d)
 
     # Mirror X so the trailing edge faces the origin and the wire enters from behind it.
     x_back = max(p[0] for p in xy + uv)
@@ -124,13 +127,15 @@ def layout_wing(wing: WingPanel, machine: Machine, placement: Placement) -> Wing
     return WingLayout(
         z_root,
         z_tip,
-        to_machine(root_core),
-        to_machine(tip_core),
+        to_machine(sections.root),
+        to_machine(sections.tip),
         to_machine(xy),
         to_machine(uv),
         to_machine(root_skin),
         to_machine(tip_skin),
-        cutbacks,
+        sections.cutbacks,
+        [to_machine(h) for h in sections.holes(tip=False)],
+        [to_machine(h) for h in sections.holes(tip=True)],
     )
 
 

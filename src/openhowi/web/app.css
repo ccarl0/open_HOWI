@@ -273,3 +273,14 @@ dialog::backdrop { background: rgb(10 14 20 / 45%); }
 .drawing-box button { align-self: flex-start; }
 .drawing-box.empty .name { font-weight: 400; color: var(--muted); }
 .thumbs path.skin { fill: none; stroke: var(--muted); stroke-dasharray: 3 2; }
+
+/* List fields (spars, servo channels) ------------------------------------------------- */
+.list-field { display: flex; flex-direction: column; gap: 8px; }
+.list-item { border: 1px solid var(--border); border-radius: 8px; padding: 8px 10px 4px; background: var(--panel-2); }
+.list-item .field { margin-bottom: 5px; }
+.list-item .field input, .list-item .field select { background: var(--panel); }
+.list-head { display: flex; align-items: center; justify-content: space-between; font-size: 12.5px; font-weight: 600; margin-bottom: 6px; }
+.list-head button { padding: 0 6px; min-width: 0; color: var(--muted); }
+.list-head button:hover { color: var(--danger); }
+.list-field .add { align-self: flex-start; color: var(--accent-strong); background: transparent; border-style: dashed; }
+.list-empty { margin: 0; }

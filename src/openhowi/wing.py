@@ -12,7 +12,7 @@ from collections.abc import Sequence
 from dataclasses import dataclass
 
 from .airfoil import Airfoil
-from .core import CoreSpec, core_runs, materialize, run_counts
+from .core import Channel, CoreError, CoreSpec, Spar, channel_outline, channel_path, core_runs, materialize, run_counts
 from .geometry import Point, offset_polygon, signed_area
 
 
@@ -110,20 +110,18 @@ class WingPanel:
     """Cut the core back this far from the leading edge for a LE strip (mm along the chord)."""
     te_stock: float = 0.0
     """Cut the core back this far from the trailing edge for a TE strip (mm)."""
-    spar_position: float = 25.0
-    """Centre of the spar slots at the root, % of chord from the leading edge."""
-    spar_position_tip: float | None = None
-    """Spar position at the tip (% of chord); defaults to the root position."""
-    spar_width: float = 0.0
-    spar_depth_top: float = 0.0
-    """Depth of the slot cut into the top surface (mm); 0 = no slot."""
-    spar_depth_bottom: float = 0.0
+    spars: tuple[Spar, ...] = ()
+    """Spar-cap slots (any number, top and/or bottom)."""
+    channels: tuple[Channel, ...] = ()
+    """Round servo-lead channels, each reached through a slit from one surface."""
 
     def __post_init__(self) -> None:
         if self.tip_airfoil is None:
             object.__setattr__(self, "tip_airfoil", self.root_airfoil)
         if self.tip_chord is None:
             object.__setattr__(self, "tip_chord", self.root_chord)
+        object.__setattr__(self, "spars", tuple(self.spars))
+        object.__setattr__(self, "channels", tuple(self.channels))
         if self.root_chord <= 0 or self.tip_chord <= 0:
             raise ValueError("chords must be > 0")
         if self.span <= 0:
@@ -134,8 +132,6 @@ class WingPanel:
             raise ValueError("washout_pivot must be between 0 and 1")
         if self.points_per_surface < 3:
             raise ValueError("points_per_surface must be >= 3")
-        if self.spar_position_tip is not None and not 0 < self.spar_position_tip < 100:
-            raise ValueError("spar_position_tip must be between 0 and 100 % of the chord")
         self.core_spec()  # validates the core options
 
     def core_spec(self) -> CoreSpec:
@@ -144,33 +140,47 @@ class WingPanel:
             sheeting_bottom=self.sheeting_bottom,
             le_stock=self.le_stock,
             te_stock=self.te_stock,
-            spar_position=self.spar_position,
-            spar_width=self.spar_width,
-            spar_depth_top=self.spar_depth_top,
-            spar_depth_bottom=self.spar_depth_bottom,
+            spars=self.spars,
+            channels=self.channels,
         )
 
-    def cores(self) -> tuple[list[Point], list[Point], dict[str, float]]:
-        """Finished-size foam core at the root and tip (no kerf), index-matched, in place.
-
-        Also returns how far each core is cut back from the airfoil's leading and trailing edges.
-        """
+    def sections(self) -> WingSections:
+        """Finished-size foam cores at the root and tip (no kerf), index-matched, in place."""
         assert self.tip_airfoil is not None and self.tip_chord is not None
         spec = self.core_spec()
         root = core_runs(self.root_airfoil, self.root_chord, spec)
-        tip = core_runs(self.tip_airfoil, self.tip_chord, spec, self.spar_position_tip)
+        tip = core_runs(self.tip_airfoil, self.tip_chord, spec, tip=True)
         counts = run_counts(root, self.points_per_surface)
-        root_pts = position_section(materialize(root, counts), self.root_chord, 0.0, 0.0, 0.0, self.washout_pivot)
-        tip_pts = position_section(
-            materialize(tip, counts), self.tip_chord, self.sweep, self.tip_offset_y, self.washout, self.washout_pivot
+        root_pts, root_tags = materialize(root, counts)
+        tip_pts, tip_tags = materialize(tip, counts)
+        placements = (
+            (self.root_chord, 0.0, 0.0, 0.0),
+            (self.tip_chord, self.sweep, self.tip_offset_y, self.washout),
         )
-        cutbacks = {
-            "root_te": root.te_cutback,
-            "tip_te": tip.te_cutback,
-            "root_le": root.le_cutback,
-            "tip_le": tip.le_cutback,
-        }
-        return root_pts, tip_pts, cutbacks
+        (rc, rx, ry, rt), (tc, tx, ty, tt) = placements
+
+        def place(points: list[Point], chord: float, x: float, y: float, twist: float) -> list[Point]:
+            return position_section(points, chord, x, y, twist, self.washout_pivot)
+
+        root_channels = [(root_tags[c.tag], place([c.center], rc, rx, ry, rt)[0], c.radius) for c in root.channels]
+        tip_channels = [(tip_tags[c.tag], place([c.center], tc, tx, ty, tt)[0], c.radius) for c in tip.channels]
+        return WingSections(
+            root=place(root_pts, rc, rx, ry, rt),
+            tip=place(tip_pts, tc, tx, ty, tt),
+            cutbacks={
+                "root_te": root.te_cutback,
+                "tip_te": tip.te_cutback,
+                "root_le": root.le_cutback,
+                "tip_le": tip.le_cutback,
+            },
+            root_channels=root_channels,
+            tip_channels=tip_channels,
+        )
+
+    def cores(self) -> tuple[list[Point], list[Point], dict[str, float]]:
+        """Root and tip cores plus how far they are cut back from the airfoil's edges."""
+        sections = self.sections()
+        return sections.root, sections.tip, sections.cutbacks
 
     def skins(self) -> tuple[list[Point], list[Point]]:
         """Outline of the finished airfoil at the root and tip (for display)."""
@@ -187,10 +197,49 @@ class WingPanel:
         )
         return root, tip
 
+    def contours(self) -> tuple[list[Point], list[Point]]:
+        """Kerf-compensated wire paths in the root and tip planes, index-matched."""
+        sections = self.sections()
+        return (
+            cut_path(sections.root, sections.root_channels, self.root_kerf),
+            cut_path(sections.tip, sections.tip_channels, self.tip_kerf),
+        )
+
     def root_contour(self) -> list[Point]:
         """Kerf-compensated wire path in the root plane."""
-        return apply_kerf(self.cores()[0], self.root_kerf)
+        return self.contours()[0]
 
     def tip_contour(self) -> list[Point]:
         """Kerf-compensated wire path in the tip plane (index-matched to the root)."""
-        return apply_kerf(self.cores()[1], self.tip_kerf)
+        return self.contours()[1]
+
+
+@dataclass
+class WingSections:
+    root: list[Point]
+    tip: list[Point]
+    cutbacks: dict[str, float]
+    root_channels: list[tuple[int, Point, float]]
+    """(index of the entry point in ``root``, centre, radius) for each servo channel."""
+    tip_channels: list[tuple[int, Point, float]]
+
+    def holes(self, tip: bool) -> list[list[Point]]:
+        """The finished servo channels at the root or tip, for display."""
+        return [channel_outline(center, r) for _, center, r in (self.tip_channels if tip else self.root_channels)]
+
+
+def cut_path(core: Sequence[Point], channels: Sequence[tuple[int, Point, float]], kerf: float) -> list[Point]:
+    """Kerf-compensated outline with a detour into every servo channel at its entry point."""
+    ring = apply_kerf(core, kerf)
+    detours: dict[int, list[tuple[Point, float]]] = {}
+    for index, center, radius in channels:
+        inner = radius - kerf / 2
+        if inner < 0.25:
+            raise CoreError(f"a {2 * radius:g} mm servo channel is narrower than the {kerf:g} mm kerf")
+        detours.setdefault(index, []).append((center, inner))
+    out: list[Point] = []
+    for i, p in enumerate(ring):
+        out.append(p)
+        for center, inner in detours.get(i, []):
+            out += channel_path(p, center, inner)
+    return out

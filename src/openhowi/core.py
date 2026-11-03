@@ -1,30 +1,95 @@
 # SPDX-License-Identifier: GPL-3.0-or-later
-"""Foam core sections for built-up wings: sheeting allowance, LE/TE stock and spar slots.
+"""Foam core sections for built-up wings: sheeting, LE/TE stock, spar slots and servo channels.
 
 The core is the airfoil shrunk by the sheeting thickness (top and bottom can
 differ), optionally cut back at the leading and trailing edges for hardwood
-or balsa stock, with rectangular slots for spar caps. Where the airfoil gets
-thinner than the two sheets together (near the trailing edge, or at a sharp
-leading edge), the core ends where the shrunk surfaces meet.
+or balsa stock, with rectangular slots for spar caps and round servo-lead
+channels. Where the airfoil gets thinner than the two sheets together (near
+the trailing edge, or at a sharp leading edge), the core ends where the
+shrunk surfaces meet.
 
-Each section is built as a list of runs (surface curves and slot corners) so
-that root and tip can be resampled to exactly the same number of points.
+A servo channel is cut the way builders do it by hand: the wire comes in
+through a straight slit from the top or bottom surface, goes round the
+channel and leaves along the slit.
+
+Each section is built as a list of runs (surface curves, slot corners,
+channel entries) so that root and tip can be resampled to exactly the same
+number of points.
 """
 
 from __future__ import annotations
 
 import bisect
+import itertools
+import math
 from dataclasses import dataclass, field
 
 from .airfoil import Airfoil
 from .geometry import Point, cosine_spacing, dedupe, offset_polyline, polyline_length, resample
 
 MIN_WEB = 1.0
-"""Thinnest foam (mm) a spar slot may leave."""
+"""Thinnest foam (mm) a slot or channel may leave."""
+CIRCLE_POINTS = 32
+"""Points around a servo channel (the same at root and tip)."""
 
 
 class CoreError(ValueError):
     """The requested core cannot be made from this airfoil."""
+
+
+def _check_position(name: str, value: float | None) -> None:
+    if value is not None and not 0 < value < 100:
+        raise ValueError(f"{name} must be between 0 and 100 % of the chord")
+
+
+@dataclass(frozen=True)
+class Spar:
+    """Rectangular slots for spar caps, in the top and/or bottom of the core."""
+
+    position: float = 25.0
+    """Centre of the slots at the root, % of chord from the leading edge."""
+    width: float = 6.0
+    depth_top: float = 0.0
+    """Depth below the core surface (mm); 0 = no slot on top."""
+    depth_bottom: float = 0.0
+    position_tip: float | None = None
+    """Position at the tip (% of chord); defaults to the root position."""
+
+    def __post_init__(self) -> None:
+        _check_position("position", self.position)
+        _check_position("position_tip", self.position_tip)
+        if self.width <= 0:
+            raise ValueError("width must be > 0")
+        if self.depth_top < 0 or self.depth_bottom < 0:
+            raise ValueError("depths must be >= 0")
+
+    def at(self, tip: bool) -> float:
+        return self.position_tip if tip and self.position_tip is not None else self.position
+
+
+@dataclass(frozen=True)
+class Channel:
+    """A round spanwise channel for servo leads, reached through a slit from one surface."""
+
+    position: float = 45.0
+    """Centre at the root, % of chord from the leading edge."""
+    diameter: float = 8.0
+    offset: float = 0.0
+    """Height of the centre above the middle of the core (mm)."""
+    side: str = "bottom"
+    """Surface the slit comes in from: "bottom" or "top"."""
+    position_tip: float | None = None
+
+    def __post_init__(self) -> None:
+        _check_position("position", self.position)
+        _check_position("position_tip", self.position_tip)
+        if self.diameter <= 0:
+            raise ValueError("diameter must be > 0")
+        if self.side not in ("bottom", "top"):
+            raise ValueError('side must be "bottom" or "top"')
+
+    def at(self, tip: bool) -> float:
+        return self.position_tip if tip and self.position_tip is not None else self.position
 
 
 @dataclass(frozen=True)
@@ -35,41 +100,56 @@ class CoreSpec:
     """Cut the core back this far (mm, along the chord) from the leading edge."""
     te_stock: float = 0.0
     """Cut the core back this far (mm) from the trailing edge."""
-    spar_position: float = 25.0
-    """Centre of the spar slots, % of chord from the leading edge."""
-    spar_width: float = 0.0
-    spar_depth_top: float = 0.0
-    spar_depth_bottom: float = 0.0
+    spars: tuple[Spar, ...] = ()
+    channels: tuple[Channel, ...] = ()
 
     def __post_init__(self) -> None:
-        for name in ("sheeting_top", "sheeting_bottom", "le_stock", "te_stock", "spar_width",
-                     "spar_depth_top", "spar_depth_bottom"):  # fmt: skip
+        for name in ("sheeting_top", "sheeting_bottom", "le_stock", "te_stock"):
             if getattr(self, name) < 0:
                 raise ValueError(f"{name} must be >= 0")
-        if not 0 < self.spar_position < 100:
-            raise ValueError("spar_position must be between 0 and 100 % of the chord")
+        object.__setattr__(self, "spars", tuple(self.spars))
+        object.__setattr__(self, "channels", tuple(self.channels))
 
     @property
     def sheeted(self) -> bool:
         return self.sheeting_top > 0 or self.sheeting_bottom > 0
 
     @property
-    def slot_top(self) -> bool:
-        return self.spar_width > 0 and self.spar_depth_top > 0
+    def slotted(self) -> bool:
+        return any(s.depth_top > 0 or s.depth_bottom > 0 for s in self.spars)
 
     @property
-    def slot_bottom(self) -> bool:
-        return self.spar_width > 0 and self.spar_depth_bottom > 0
+    def plain(self) -> bool:
+        return not (self.sheeted or self.le_stock or self.te_stock or self.slotted or self.channels)
+
+
+@dataclass
+class Run:
+    kind: str
+    """"curve" (a stretch of surface, resampled) or "corner" (fixed points)."""
+    surface: int
+    """0 = upper, 1 = lower."""
+    points: list[Point]
+    skip_first: bool = False
+    """The run starts on the previous run's last point; leave that duplicate out."""
+    tag: str | None = None
+    """Names the run's last point (a servo channel's entry)."""
+
+
+@dataclass
+class ChannelGeometry:
+    tag: str
+    center: Point
+    radius: float
+    side: str
 
 
 @dataclass
 class CoreRuns:
     """One core section, untwisted, leading edge at x = 0, as runs of points."""
 
-    runs: list[tuple[str, int, list[Point]]] = field(default_factory=list)
-    """(kind, surface, points): kind "curve" or "corner"; surface 0 = upper, 1 = lower."""
-    drop_lower_start: bool = False
-    """The lower surface starts on the upper surface's last point (plain leading edge)."""
+    runs: list[Run] = field(default_factory=list)
+    channels: list[ChannelGeometry] = field(default_factory=list)
     te_cutback: float = 0.0
     """Distance (mm) from the airfoil's trailing edge to the core's."""
     le_cutback: float = 0.0
@@ -133,7 +213,8 @@ def _crossing(thickness, a: float, b: float) -> float:  # type: ignore[no-untype
     return a
 
 
-def core_runs(airfoil: Airfoil, chord: float, spec: CoreSpec, spar_position: float | None = None) -> CoreRuns:
+def core_runs(airfoil: Airfoil, chord: float, spec: CoreSpec, tip: bool = False) -> CoreRuns:
+    """Build the core section for the root (``tip=False``) or the tip of a panel."""
     foil = airfoil.normalized()
     upper = dedupe([(x * chord, y * chord) for x, y in foil.upper()])  # trailing edge -> leading edge
     lower = dedupe([(x * chord, y * chord) for x, y in foil.lower()])  # leading edge -> trailing edge
@@ -177,80 +258,146 @@ def core_runs(airfoil: Airfoil, chord: float, spec: CoreSpec, spar_position: flo
         raise CoreError(f"the LE/TE stock and sheeting leave no core on the {chord:g} mm section")
     upper = _clip(upper, lo, hi, y_up)
     lower = _clip(lower, lo, hi, y_lo)
+    result = CoreRuns(te_cutback=chord - hi if hi is not None else 0.0, le_cutback=lo if lo is not None else 0.0)
+    where = "tip" if tip else "root"
 
-    result = CoreRuns(
-        drop_lower_start=not spec.sheeted and spec.le_stock == 0,
-        te_cutback=chord - hi if hi is not None else 0.0,
-        le_cutback=lo if lo is not None else 0.0,
-    )
-
-    # Spar slots: rectangular notches, walls perpendicular to the chord.
-    position = spec.spar_position if spar_position is None else spar_position
-    if spec.slot_top or spec.slot_bottom:
+    # Features on each surface: (x_from, x_to, kind, data), kind "slot" or "entry".
+    features: tuple[list[tuple[float, float, str, object]], list[tuple[float, float, str, object]]] = ([], [])
+    slots: list[tuple[float, float, float | None, float | None]] = []  # xl, xr, top floor, bottom floor
+    for number, spar in enumerate(spec.spars, start=1):
+        if spar.depth_top <= 0 and spar.depth_bottom <= 0:
+            continue
+        position = spar.at(tip)
+        label = f"spar {number} ({position:g} % of the {chord:g} mm {where} chord)"
         xc = position / 100.0 * chord
-        xl, xr = xc - spec.spar_width / 2, xc + spec.spar_width / 2
+        xl, xr = xc - spar.width / 2, xc + spar.width / 2
         if xl <= start + 0.5 or xr >= end - 0.5:
-            raise CoreError(f"the spar slot at {position:g} % of the {chord:g} mm chord is outside the core")
-        floor_top = y_up(xc) - spec.spar_depth_top if spec.slot_top else None
-        floor_bottom = y_lo(xc) + spec.spar_depth_bottom if spec.slot_bottom else None
+            raise CoreError(f"{label} is outside the core")
+        floor_top = y_up(xc) - spar.depth_top if spar.depth_top > 0 else None
+        floor_bottom = y_lo(xc) + spar.depth_bottom if spar.depth_bottom > 0 else None
         if (floor_top is not None and floor_top > min(y_up(xl), y_up(xr)) - 0.1) or (
             floor_bottom is not None and floor_bottom < max(y_lo(xl), y_lo(xr)) + 0.1
         ):
-            raise CoreError(
-                f"the surface slopes too much across the spar slot at {position:g} % of the {chord:g} mm chord; "
-                "make the slot deeper or narrower, or move it"
-            )
+            raise CoreError(f"the surface slopes too much across {label}; make the slot deeper or narrower, or move it")
         xs = [xl + (xr - xl) * k / 20 for k in range(21)]
         top_limit = floor_top if floor_top is not None else min(y_up(x) for x in xs)
         bottom_limit = floor_bottom if floor_bottom is not None else max(y_lo(x) for x in xs)
         if top_limit - bottom_limit < MIN_WEB:
-            raise CoreError(
-                f"the spar slots leave less than {MIN_WEB:g} mm of foam on the {chord:g} mm section; make them shallower"
-            )
-    else:
-        xl = xr = 0.0
-        floor_top = floor_bottom = None
+            raise CoreError(f"the slots of {label} leave less than {MIN_WEB:g} mm of foam; make them shallower")
+        slots.append((xl, xr, floor_top, floor_bottom))
+        if floor_top is not None:
+            features[0].append((xl, xr, "slot", (floor_top, label)))
+        if floor_bottom is not None:
+            features[1].append((xl, xr, "slot", (floor_bottom, label)))
 
-    if floor_top is not None:
-        a, rest = _split(upper, xr, y_up)
-        _, b = _split(rest, xl, y_up)
-        result.runs += [("curve", 0, a), ("corner", 0, [(xr, floor_top)]), ("corner", 0, [(xl, floor_top)]),
-                        ("curve", 0, b)]  # fmt: skip
-    else:
-        result.runs.append(("curve", 0, upper))
-    if floor_bottom is not None:
-        a, rest = _split(lower, xl, y_lo)
-        _, b = _split(rest, xr, y_lo)
-        result.runs += [("curve", 1, a), ("corner", 1, [(xl, floor_bottom)]), ("corner", 1, [(xr, floor_bottom)]),
-                        ("curve", 1, b)]  # fmt: skip
-    else:
-        result.runs.append(("curve", 1, lower))
+    circles: list[tuple[float, float, float, str]] = []
+    for number, channel in enumerate(spec.channels, start=1):
+        position = channel.at(tip)
+        label = f"servo channel {number} ({position:g} % of the {chord:g} mm {where} chord)"
+        xc = position / 100.0 * chord
+        r = channel.diameter / 2
+        if xc - r <= start + MIN_WEB or xc + r >= end - MIN_WEB:
+            raise CoreError(f"{label} does not fit in the core")
+        yc = (y_up(xc) + y_lo(xc)) / 2 + channel.offset
+        room = math.inf
+        for k in range(21):
+            x = xc - r + 2 * r * k / 20
+            half = math.sqrt(max(0.0, r * r - (x - xc) ** 2))
+            room = min(room, y_up(x) - (yc + half), (yc - half) - y_lo(x))
+        for xl, xr, floor_top, floor_bottom in slots:
+            if xl < xc + r + MIN_WEB and xr > xc - r - MIN_WEB:
+                if floor_top is not None:
+                    room = min(room, floor_top - (yc + r))
+                if floor_bottom is not None:
+                    room = min(room, (yc - r) - floor_bottom)
+        for other_x, other_y, other_r, other_label in circles:
+            room = min(room, math.hypot(xc - other_x, yc - other_y) - r - other_r)
+            if room < MIN_WEB:
+                raise CoreError(f"{label} is too close to {other_label}")
+        if room < MIN_WEB:
+            raise CoreError(f"{label} leaves less than {MIN_WEB:g} mm of foam; make it smaller or move it")
+        circles.append((xc, yc, r, label))
+        tag = f"channel{number}"
+        result.channels.append(ChannelGeometry(tag, (xc, yc), r, channel.side))
+        features[0 if channel.side == "top" else 1].append((xc, xc, "entry", (tag, label)))
+
+    # Features on one surface must not overlap.
+    for surface in features:
+        surface.sort(key=lambda f: f[0])
+        for a, b in itertools.pairwise(surface):
+            if b[0] < a[1] + 0.5:
+                raise CoreError(f"{a[3][1]} and {b[3][1]} overlap")  # type: ignore[index]
+
+    def build(surface_index: int, curve: list[Point], y: _Curve, skip_first: bool) -> None:
+        increasing = surface_index == 1
+        items = sorted(features[surface_index], key=lambda f: f[0], reverse=not increasing)
+        pending_skip = skip_first
+        for x_from, x_to, kind, data in items:
+            near, far = (x_from, x_to) if increasing else (x_to, x_from)
+            if kind == "slot":
+                floor = data[0]  # type: ignore[index]
+                piece, rest = _split(curve, near, y)
+                _, curve = _split(rest, far, y)
+                result.runs += [
+                    Run("curve", surface_index, piece, pending_skip),
+                    Run("corner", surface_index, [(near, floor)]),
+                    Run("corner", surface_index, [(far, floor)]),
+                ]
+                pending_skip = False
+            else:
+                piece, curve = _split(curve, near, y)
+                result.runs.append(Run("curve", surface_index, piece, pending_skip, tag=data[0]))  # type: ignore[index]
+                pending_skip = True
+        result.runs.append(Run("curve", surface_index, curve, pending_skip))
+
+    build(0, upper, y_up, False)
+    # A plain leading edge: the lower surface starts on the upper surface's last point.
+    build(1, lower, y_lo, not spec.sheeted and spec.le_stock == 0)
     return result
 
 
 def run_counts(section: CoreRuns, n_per_surface: int) -> list[int]:
     """Points per run, shared by root and tip so their outlines stay index-matched."""
-    counts = [1] * len(section.runs)
+    counts = [len(run.points) for run in section.runs]
     for surface in (0, 1):
-        curves = [i for i, (kind, s, _) in enumerate(section.runs) if kind == "curve" and s == surface]
-        lengths = [max(polyline_length(section.runs[i][2]), 1e-9) for i in curves]
+        curves = [i for i, run in enumerate(section.runs) if run.kind == "curve" and run.surface == surface]
+        lengths = [max(polyline_length(section.runs[i].points), 1e-9) for i in curves]
         total = sum(lengths)
         for i, length in zip(curves, lengths):
             counts[i] = n_per_surface if len(curves) == 1 else max(3, round(n_per_surface * length / total))
     return counts
 
 
-def materialize(section: CoreRuns, counts: list[int]) -> list[Point]:
+def materialize(section: CoreRuns, counts: list[int]) -> tuple[list[Point], dict[str, int]]:
+    """The section's points, and the index of every tagged point (servo channel entries)."""
     out: list[Point] = []
-    first_lower = True
-    for (kind, surface, points), count in zip(section.runs, counts):
-        if kind == "corner":
-            out += points
-            continue
-        pts = resample(points, cosine_spacing(count))
-        if surface == 1 and first_lower:
-            first_lower = False
-            if section.drop_lower_start:
-                pts = pts[1:]
+    tags: dict[str, int] = {}
+    for run, count in zip(section.runs, counts):
+        pts = run.points if run.kind == "corner" else resample(run.points, cosine_spacing(count))
+        if run.skip_first:
+            pts = pts[1:]
         out += pts
-    return out
+        if run.tag:
+            tags[run.tag] = len(out) - 1
+    return out, tags
+
+
+def channel_path(entry: Point, center: Point, radius: float, n: int = CIRCLE_POINTS) -> list[Point]:
+    """From the entry point down the slit, once round the channel, and back out (entry point excluded)."""
+    a0 = math.atan2(entry[1] - center[1], entry[0] - center[0])
+    circle = [
+        (
+            center[0] + radius * math.cos(a0 + 2 * math.pi * k / n),
+            center[1] + radius * math.sin(a0 + 2 * math.pi * k / n),
+        )
+        for k in range(n + 1)
+    ]
+    return circle + [entry]
+
+
+def channel_outline(center: Point, radius: float, n: int = CIRCLE_POINTS) -> list[Point]:
+    """The finished channel as a clockwise ring, for display."""
+    return [
+        (center[0] + radius * math.cos(-2 * math.pi * k / n), center[1] + radius * math.sin(-2 * math.pi * k / n))
+        for k in range(n)
+    ]

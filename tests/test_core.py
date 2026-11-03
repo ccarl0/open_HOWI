@@ -5,20 +5,20 @@ import math
 import pytest
 
 from openhowi.airfoil import naca4
-from openhowi.config import load_wing_job
-from openhowi.core import CoreError, CoreSpec, core_runs, materialize, run_counts
+from openhowi.config import ConfigError, load_wing_job
+from openhowi.core import CIRCLE_POINTS, Channel, CoreError, CoreSpec, Spar, core_runs, materialize, run_counts
 from openhowi.geometry import distance
 from openhowi.machine import Machine
 from openhowi.project import SliceError, default_project, slice_project
 from openhowi.toolpath import Placement, build_wing_toolpath
-from openhowi.wing import WingPanel, apply_kerf, place_section
+from openhowi.wing import WingPanel, apply_kerf, cut_path, place_section
 
 FOIL = naca4("2412")
 
 
 def section(chord=250.0, n=80, **spec):
     runs = core_runs(FOIL, chord, CoreSpec(**spec))
-    return materialize(runs, run_counts(runs, n)), runs
+    return materialize(runs, run_counts(runs, n))[0], runs
 
 
 def y_at(points, x, upper):
@@ -61,7 +61,7 @@ def test_le_and_te_stock_cut_the_core_flat():
 
 def test_spar_slots_top_and_bottom():
     plain, _ = section()
-    pts, _ = section(spar_width=6, spar_depth_top=2, spar_depth_bottom=3, spar_position=30)
+    pts, _ = section(spars=[Spar(position=30, width=6, depth_top=2, depth_bottom=3)])
     xc = 75.0
     top_floor = y_at(plain, xc, True) - 2
     bottom_floor = y_at(plain, xc, False) + 3
@@ -79,22 +79,30 @@ def test_spar_slots_top_and_bottom():
 
 def test_root_and_tip_stay_index_matched():
     wing = WingPanel(FOIL, root_chord=260, span=600, tip_airfoil=naca4("0010"), tip_chord=140, sweep=40, washout=2,
-                     sheeting_top=1.5, sheeting_bottom=1.0, le_stock=4, te_stock=6, spar_width=5,
-                     spar_depth_top=2, spar_depth_bottom=2, spar_position=28, spar_position_tip=32)  # fmt: skip
+                     sheeting_top=1.5, sheeting_bottom=1.0, le_stock=4, te_stock=6,
+                     spars=[Spar(28, 5, 2, 2, position_tip=32), Spar(60, 4, 1, 0)],
+                     channels=[Channel(45, 6), Channel(36, 4, side="top", position_tip=40)])  # fmt: skip
     root, tip, cutbacks = wing.cores()
     assert len(root) == len(tip)
-    assert len(wing.root_contour()) == len(wing.tip_contour()) == len(root)
+    root_path, tip_path = wing.contours()
+    assert len(root_path) == len(tip_path) == len(root) + 2 * (CIRCLE_POINTS + 2)
     assert cutbacks["root_le"] == cutbacks["tip_le"] == 4
 
 
 @pytest.mark.parametrize(
-    "spec, message",
+    ("spec", "message"),
     [
         ({"sheeting_top": 20, "sheeting_bottom": 20}, "no foam"),
-        ({"spar_width": 6, "spar_depth_top": 2, "spar_position": 1}, "outside the core"),
-        ({"spar_width": 6, "spar_depth_top": 15, "spar_depth_bottom": 15}, "less than 1 mm"),
+        ({"spars": [Spar(1, 6, 2)]}, "spar 1 .* is outside the core"),
+        ({"spars": [Spar(25, 6, 15, 15)]}, "spar 1 .* less than 1 mm"),
         ({"le_stock": 150, "te_stock": 150}, "leave no core"),
-        ({"spar_width": 40, "spar_depth_top": 0.2, "spar_position": 85}, "slopes too much"),
+        ({"spars": [Spar(85, 40, 0.2)]}, "slopes too much"),
+        ({"spars": [Spar(30, 6, 1), Spar(32, 6, 1)]}, "spar 1 .* and spar 2 .* overlap"),
+        ({"channels": [Channel(45, 40)]}, "servo channel 1 .* leaves less than 1 mm"),
+        ({"te_stock": 10, "channels": [Channel(96, 4)]}, "servo channel 1 .* does not fit"),
+        ({"channels": [Channel(40, 8), Channel(43, 8)]}, "servo channel 2 .* too close to servo channel 1"),
+        ({"spars": [Spar(45, 8, 10)], "channels": [Channel(45, 10)]}, "servo channel 1 .* less than 1 mm"),
+        ({"spars": [Spar(45, 8, 0, 2)], "channels": [Channel(45, 4, side="bottom")]}, "overlap"),
     ],
 )
 def test_core_errors(spec, message):
@@ -102,11 +110,57 @@ def test_core_errors(spec, message):
         section(**spec)
 
 
+def test_several_spars_on_both_surfaces():
+    pts, runs = section(spars=[Spar(20, 5, 1, 1), Spar(40, 5, 1, 0), Spar(70, 4, 0, 1)])
+    corners = [r for r in runs.runs if r.kind == "corner"]
+    assert len(corners) == 2 * 4  # two floor corners per slot: top 20 %, top 40 %, bottom 20 %, bottom 70 %
+    assert y_at(pts, 100, True) < y_at(section()[0], 100, True) - 0.9  # inside the 40 % top slot
+
+
+def test_spars_with_no_depth_are_ignored():
+    plain, _ = section()
+    pts, _ = section(spars=[Spar(30, 6, 0, 0)])
+    assert pts == plain
+
+
+def test_servo_channel_cut_path():
+    channel = Channel(45, 8, offset=1.0)
+    runs = core_runs(FOIL, 250, CoreSpec(channels=[channel]))
+    pts, tags = materialize(runs, run_counts(runs, 80))
+    entry = pts[tags["channel1"]]
+    (geom,) = runs.channels
+    assert entry[0] == pytest.approx(112.5)  # on the lower surface, straight below the centre
+    assert entry[1] == pytest.approx(y_at(pts, 112.5, False), abs=1e-6)
+    assert geom.center[0] == pytest.approx(112.5)
+    assert geom.center[1] == pytest.approx((y_at(pts, 112.5, True) + y_at(pts, 112.5, False)) / 2 + 1, abs=0.05)
+    path = cut_path(pts, [(tags["channel1"], geom.center, geom.radius)], kerf=1.0)
+    i = tags["channel1"]
+    detour = path[i + 1 : i + 2 + CIRCLE_POINTS]
+    for q in detour:  # the wire runs half a kerf inside the finished channel
+        assert math.dist(q, geom.center) == pytest.approx(4 - 0.5)
+    assert path[i + 2 + CIRCLE_POINTS] == path[i]  # back out along the slit
+    assert len(path) == len(pts) + CIRCLE_POINTS + 2
+
+
+def test_channel_narrower_than_kerf():
+    runs = core_runs(FOIL, 250, CoreSpec(channels=[Channel(45, 1.0)]))
+    pts, tags = materialize(runs, run_counts(runs, 80))
+    (geom,) = runs.channels
+    with pytest.raises(CoreError, match="narrower than the 1.2 mm kerf"):
+        cut_path(pts, [(tags["channel1"], geom.center, geom.radius)], kerf=1.2)
+
+
 def test_core_spec_validation():
     with pytest.raises(ValueError):
         CoreSpec(sheeting_top=-1)
     with pytest.raises(ValueError):
-        CoreSpec(spar_position=0)
+        Spar(position=0)
+    with pytest.raises(ValueError):
+        Spar(width=0)
+    with pytest.raises(ValueError):
+        Channel(side="left")
+    with pytest.raises(ValueError):
+        Channel(diameter=0)
 
 
 def test_kerf_on_a_sharp_trailing_edge_keeps_the_two_end_points_together():
@@ -130,19 +184,41 @@ def test_toolpath_cuts_the_trailing_edge_face():
 
 def test_project_with_core_options():
     project = default_project()
-    project["part"].update(sheeting_top=1.5, sheeting_bottom=1.5, le_stock=5, spar_width=6, spar_depth_top=2,
-                           spar_depth_bottom=2, spar_position=30)  # fmt: skip
+    project["part"].update(
+        sheeting_top=1.5, sheeting_bottom=1.5, le_stock=5,
+        spars=[{"position": 30, "width": 6, "depth_top": 2, "depth_bottom": 2, "position_tip": None},
+               {"position": 65, "width": 4, "depth_top": 1, "depth_bottom": 0}],
+        channels=[{"position": 45, "diameter": 8, "offset": 0, "side": "bottom", "position_tip": None}],
+    )  # fmt: skip
     result = slice_project(project)
     data = result.data
-    assert data["stats"]["core"]["le_cutback"] == {"root": 5.0, "tip": 5.0}
-    assert data["stats"]["core"]["te_cutback"]["root"] > 5
+    core = data["stats"]["core"]
+    assert core["le_cutback"] == {"root": 5.0, "tip": 5.0}
+    assert core["te_cutback"]["root"] > 5
+    assert (core["spars"], core["channels"]) == (2, 1)
     assert any("short of the trailing edge" in w for w in data["warnings"])
+    assert any("servo channel(s) are reached through a slit from the bottom" in w for w in data["warnings"])
     assert len(data["part"]["skins"]) == 1
-    assert "(spar slots 6 mm wide at 30 %: top 2 mm, bottom 2 mm deep)" in result.gcode
+    (solid,) = data["part"]["solids"]
+    assert len(solid["root"]["holes"]) == len(solid["tip"]["holes"]) == 1
+    assert "(spar 1: 6 mm wide at 30 %, top 2 / bottom 2 mm deep)" in result.gcode
+    assert "(servo channel 1: 8 mm at 45 %, offset 0 mm, slit from the bottom)" in result.gcode
     json.dumps(data)
-    project["part"]["spar_depth_top"] = 40
-    with pytest.raises(SliceError, match="less than 1 mm"):
+    project["part"]["spars"][0]["depth_top"] = 40
+    with pytest.raises(SliceError, match="spar 1 .* less than 1 mm"):
         slice_project(project)
+    project["part"]["spars"][0]["depth_top"] = "deep"
+    with pytest.raises(SliceError, match="spar 1: depth_top must be a number"):
+        slice_project(project)
+
+
+def test_project_files_with_the_old_single_spar_fields_still_slice():
+    project = default_project()
+    del project["part"]["spars"]
+    project["part"].update(spar_width=6, spar_depth_top=2, spar_depth_bottom=0, spar_position=30)
+    result = slice_project(project)
+    assert result.data["stats"]["core"]["spars"] == 1
+    assert "(spar 1: 6 mm wide at 30 %, top 2 / bottom 0 mm deep)" in result.gcode
 
 
 def test_plain_project_has_no_core_stats():
@@ -155,8 +231,14 @@ def test_toml_job_accepts_core_options(tmp_path):
     cfg = tmp_path / "job.toml"
     cfg.write_text(
         '[wing]\nroot_airfoil = "naca2412"\nroot_chord = 250\nspan = 500\n'
-        "sheeting_top = 1.5\nsheeting_bottom = 1.5\nspar_width = 6\nspar_depth_top = 2\n"
+        "sheeting_top = 1.5\nsheeting_bottom = 1.5\n"
+        "[[wing.spars]]\nposition = 30\nwidth = 6\ndepth_top = 2\n"
+        '[[wing.channels]]\nposition = 45\ndiameter = 6\nside = "top"\n'
     )
     job = load_wing_job(cfg)
-    assert job.wing.sheeting_top == 1.5 and job.wing.core_spec().slot_top
+    assert job.wing.sheeting_top == 1.5 and job.wing.core_spec().slotted
+    assert job.wing.channels == (Channel(45, 6, side="top"),)
     assert math.isfinite(job.wing.cores()[2]["root_te"])
+    cfg.write_text(cfg.read_text().replace("depth_top = 2", "depth = 2"))
+    with pytest.raises(ConfigError, match="unknown key"):
+        load_wing_job(cfg)

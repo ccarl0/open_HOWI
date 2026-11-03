@@ -9,6 +9,7 @@ from pathlib import Path
 from typing import Any
 
 from .airfoil import AirfoilError, load_airfoil
+from .core import Channel, Spar
 from .machine import Machine
 from .toolpath import Placement
 from .wing import WingPanel
@@ -70,6 +71,13 @@ def load_wing_job(path: str | Path) -> WingJob:
             wing_table[key] = load_airfoil(spec, base_dir=path.parent)
         except AirfoilError as exc:
             raise ConfigError(f"[wing] {key}: {exc}") from exc
+    for key, cls in (("spars", Spar), ("channels", Channel)):
+        items = wing_table.get(key)
+        if items is None:
+            continue
+        if not isinstance(items, list):
+            raise ConfigError(f"[wing] {key} must be written as [[wing.{key}]] tables")
+        wing_table[key] = tuple(_build(cls, dict(item), f"wing.{key} #{n}") for n, item in enumerate(items, 1))
 
     return WingJob(
         title=str(data.get("title", path.stem)),

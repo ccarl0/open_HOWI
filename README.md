@@ -52,11 +52,11 @@ Projects save as `.howi.json` files with the airfoils embedded, so you can share
 
 **Try it without a machine:** pick *Simulator (10× speed)* as the port in the Device tab.
 
-### Built-up wings: sheeting, LE/TE stock and spar slots
+### Built-up wings: sheeting, LE/TE stock, spars and servo channels
 
-For cores that get skinned, open the wing panel's **Core** and **Spar slots** groups:
+For cores that get skinned, open the wing panel's **Core**, **Spars** and **Servo channels** groups:
 
-![Core sections: sheeted with slots and LE/TE stock, obeche with a top slot, plain](docs/core.png)
+![Core sections with their wire paths: two spars and a servo channel in a sheeted core; three spar caps and two channels in a plain core](docs/core.png)
 
 - **Sheeting** (top and bottom can differ, e.g. 1.5 mm balsa or 0.6 mm obeche): the core is cut
   undersize by that much, so the finished wing has the airfoil's shape. Near the trailing edge the
@@ -64,11 +64,17 @@ For cores that get skinned, open the wing panel's **Core** and **Spar slots** gr
   tells you how far that is from the trailing edge (the skins are glued together there, or onto a TE strip).
 - **LE / TE stock**: cut the core back flat by this much (along the chord) to fit a leading-edge or
   trailing-edge strip.
-- **Spar slots**: a rectangular slot for spar caps in the top and/or bottom surface, at a % of the
-  chord (the tip can use a different position), measured from the core surface, i.e. under the
-  skins. A slot that would leave less than 1 mm of foam, or that does not fit on the core, is refused.
-- Root and tip are built with the same number of points, so the slot and every edge run straight
-  from root to tip.
+- **Spars**: add as many as you need (*+ Add spar*). Each is a rectangular slot for a spar cap in the
+  top and/or bottom surface, at a % of the chord (the tip can use a different position), measured
+  from the core surface, i.e. under the skins.
+- **Servo channels**: a round spanwise channel for servo leads (*+ Add servo channel*), at a % of the
+  chord, centred in the core (or moved up or down), at the diameter you set. The wire cannot be
+  lifted, so it reaches the channel through a straight slit from the bottom (or top) surface, goes
+  round it and leaves along the slit; tape or sheet over the slit.
+- Anything that would leave less than 1 mm of foam, does not fit on the core, or overlaps another
+  slot or channel is refused with a message saying which one.
+- Root and tip are built with the same number of points, so every slot, channel and edge runs
+  straight from root to tip.
 
 `examples/sheeted_wing.toml` shows the same options for the command line.
 
@@ -175,7 +181,7 @@ openhowi naca 2412 -o naca2412.dat                   # write a NACA 4-digit airf
 ## Roadmap
 
 - Arrange several parts in one block automatically; lead-ins from below or the side when shapes block each other
-- Several spars, joiner and servo-lead channels in wing cores
+- Joiner and dowel holes, servo bays and other spanwise-partial cut-outs
 - Homing/limit-aware placement and a block-size optimiser
 - Rotary-table (5th axis) support
 - Packaged desktop builds (one-click install on Windows/macOS)

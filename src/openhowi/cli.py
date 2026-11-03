@@ -52,14 +52,12 @@ def cmd_wing(args: argparse.Namespace) -> int:
         ),
         f"sweep {wing.sweep:g} mm, washout {wing.washout:g} deg, kerf root {wing.root_kerf:g} / tip {wing.tip_kerf:g} mm",
     ]
+    from .project import core_comments
+
     spec = wing.core_spec()
-    built_up = spec.sheeted or spec.le_stock > 0 or spec.te_stock > 0 or spec.slot_top or spec.slot_bottom
+    built_up = not spec.plain
     if built_up:
-        comments.append(
-            f"core: sheeting top {spec.sheeting_top:g} / bottom {spec.sheeting_bottom:g} mm, "
-            f"LE stock {spec.le_stock:g} mm, TE stock {spec.te_stock:g} mm, spar slots {spec.spar_width:g} mm wide, "
-            f"top {spec.spar_depth_top:g} / bottom {spec.spar_depth_bottom:g} mm deep at {spec.spar_position:g} %"
-        )
+        comments += core_comments(spec)
     gcode = generate_gcode(toolpath, machine, comments)
     output = Path(args.output or Path(args.config).with_suffix(".gcode").name)
     output.write_text(gcode, encoding="utf-8")

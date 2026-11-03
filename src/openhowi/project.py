@@ -13,6 +13,7 @@ from dataclasses import dataclass, field
 from typing import Any
 
 from .airfoil import Airfoil, AirfoilError, load_airfoil, parse_dat
+from .core import Channel, CoreSpec, Spar
 from .drawing import ShapeError
 from .gcode import generate_gcode, segments
 from .geometry import Point, bounds, polyline_length
@@ -35,6 +36,31 @@ from .wing import WingPanel
 
 PROJECT_VERSION = 1
 SLOW_END_WARNING = 0.4
+
+SPAR_FIELDS: list[dict[str, Any]] = [
+    {"key": "position", "label": "Position", "unit": "% chord", "type": "number", "min": 1, "max": 99, "step": 1,
+     "help": "Centre of the slots, measured from the leading edge."},
+    {"key": "position_tip", "label": "Tip position", "unit": "% chord", "type": "number", "min": 1, "max": 99,
+     "step": 1, "optional": True, "help": "Blank: same as the root."},
+    {"key": "width", "label": "Width", "unit": "mm", "type": "number", "min": 0.5, "step": 0.5},
+    {"key": "depth_top", "label": "Top depth", "unit": "mm", "type": "number", "min": 0, "step": 0.1,
+     "help": "Depth below the core surface (under the sheeting). 0: no slot on top."},
+    {"key": "depth_bottom", "label": "Bottom depth", "unit": "mm", "type": "number", "min": 0, "step": 0.1,
+     "help": "0: no slot underneath."},
+]  # fmt: skip
+
+CHANNEL_FIELDS: list[dict[str, Any]] = [
+    {"key": "position", "label": "Position", "unit": "% chord", "type": "number", "min": 1, "max": 99, "step": 1,
+     "help": "Centre of the channel, measured from the leading edge."},
+    {"key": "position_tip", "label": "Tip position", "unit": "% chord", "type": "number", "min": 1, "max": 99,
+     "step": 1, "optional": True, "help": "Blank: same as the root."},
+    {"key": "diameter", "label": "Diameter", "unit": "mm", "type": "number", "min": 1, "step": 0.5},
+    {"key": "offset", "label": "Height offset", "unit": "mm", "type": "number", "step": 0.5,
+     "help": "Move the channel up (or down, negative) from the middle of the core."},
+    {"key": "side", "label": "Slit from", "type": "select",
+     "options": [["bottom", "bottom surface"], ["top", "top surface"]],
+     "help": "The wire reaches the channel through a straight slit from this surface."},
+]  # fmt: skip
 
 PART_FIELDS: list[dict[str, Any]] = [
     {"key": "root_airfoil", "label": "Root airfoil", "type": "airfoil", "group": "Airfoils"},
@@ -60,16 +86,12 @@ PART_FIELDS: list[dict[str, Any]] = [
      "help": "Cut the core back this far from the leading edge to fit a balsa or hardwood leading-edge strip."},
     {"key": "te_stock", "label": "TE stock", "unit": "mm", "type": "number", "min": 0, "step": 0.5, "group": "Core",
      "help": "Cut the core back this far from the trailing edge to fit a trailing-edge strip."},
-    {"key": "spar_width", "label": "Slot width", "unit": "mm", "type": "number", "min": 0, "step": 0.5,
-     "group": "Spar slots", "help": "Width of the spar cap. 0: no spar slots."},
-    {"key": "spar_depth_top", "label": "Top slot depth", "unit": "mm", "type": "number", "min": 0, "step": 0.1,
-     "group": "Spar slots", "help": "Depth below the core surface (under the sheeting). 0: no slot on top."},
-    {"key": "spar_depth_bottom", "label": "Bottom slot depth", "unit": "mm", "type": "number", "min": 0, "step": 0.1,
-     "group": "Spar slots", "help": "0: no slot underneath."},
-    {"key": "spar_position", "label": "Position", "unit": "% chord", "type": "number", "min": 1, "max": 99, "step": 1,
-     "group": "Spar slots", "help": "Centre of the slots, measured from the leading edge."},
-    {"key": "spar_position_tip", "label": "Tip position", "unit": "% chord", "type": "number", "min": 1, "max": 99,
-     "step": 1, "optional": True, "group": "Spar slots", "help": "Blank: same as the root."},
+    {"key": "spars", "label": "Spar slots", "type": "list", "group": "Spars", "item_label": "Spar",
+     "add_label": "Add spar", "empty": "No spar slots.", "max": 6, "item_fields": SPAR_FIELDS,
+     "default_item": {"position": 25.0, "position_tip": None, "width": 6.0, "depth_top": 1.5, "depth_bottom": 1.5}},
+    {"key": "channels", "label": "Servo channels", "type": "list", "group": "Servo channels", "item_label": "Channel",
+     "add_label": "Add servo channel", "empty": "No servo channels.", "max": 4, "item_fields": CHANNEL_FIELDS,
+     "default_item": {"position": 45.0, "position_tip": None, "diameter": 8.0, "offset": 0.0, "side": "bottom"}},
     {"key": "kerf_root_override", "label": "Root kerf override", "unit": "mm", "type": "number", "min": 0,
      "step": 0.05, "optional": True, "group": "Advanced", "help": "Blank: from the material and the cut speed at the root."},
     {"key": "kerf_tip_override", "label": "Tip kerf override", "unit": "mm", "type": "number", "min": 0,
@@ -141,11 +163,8 @@ DEFAULT_PARTS: dict[str, dict[str, Any]] = {
         "sheeting_bottom": 0.0,
         "le_stock": 0.0,
         "te_stock": 0.0,
-        "spar_width": 0.0,
-        "spar_depth_top": 0.0,
-        "spar_depth_bottom": 0.0,
-        "spar_position": 25.0,
-        "spar_position_tip": None,
+        "spars": [],
+        "channels": [],
         "kerf_root_override": None,
         "kerf_tip_override": None,
         "points_per_surface": 80,
@@ -310,13 +329,9 @@ def _wing_part(part: dict[str, Any], machine: Machine, material: Material, place
     pivot = 0.25 if pivot is None else pivot
     tip_offset_y = _number(part, "tip_offset_y", 0.0) or 0.0
     n = int(_number(part, "points_per_surface", 80) or 80)
-    core = {
-        key: _number(part, key, 0.0) or 0.0
-        for key in ("sheeting_top", "sheeting_bottom", "le_stock", "te_stock", "spar_width", "spar_depth_top",
-                    "spar_depth_bottom")
-    }  # fmt: skip
-    spar_position = _number(part, "spar_position", 25.0)
-    spar_position_tip = _number(part, "spar_position_tip")
+    core = {key: _number(part, key, 0.0) or 0.0 for key in ("sheeting_top", "sheeting_bottom", "le_stock", "te_stock")}
+    spars = _items(legacy_spars(part), Spar, "spar")
+    channels = _items(part.get("channels") or [], Channel, "servo channel")
 
     try:
         wing = WingPanel(
@@ -330,8 +345,8 @@ def _wing_part(part: dict[str, Any], machine: Machine, material: Material, place
             washout_pivot=pivot,
             tip_offset_y=tip_offset_y,
             points_per_surface=n,
-            spar_position=25.0 if spar_position is None else spar_position,
-            spar_position_tip=spar_position_tip,
+            spars=spars,
+            channels=channels,
             **core,
         )
         # Kerf from the material, at the speed each end of the core actually moves.
@@ -349,24 +364,21 @@ def _wing_part(part: dict[str, Any], machine: Machine, material: Material, place
     warnings: list[str] = []
     stats: dict[str, Any] = {"airfoils": {"root": root_airfoil.name, "tip": tip_airfoil.name}}
     spec = wing.core_spec()
-    built_up = spec.sheeted or spec.le_stock > 0 or spec.te_stock > 0 or spec.slot_top or spec.slot_bottom
+    built_up = not spec.plain
     if built_up:
-        comments.append(
-            f"core: sheeting top {spec.sheeting_top:g} / bottom {spec.sheeting_bottom:g} mm, "
-            f"LE stock {spec.le_stock:g} mm, TE stock {spec.te_stock:g} mm"
-        )
-        if spec.slot_top or spec.slot_bottom:
-            where = f"{spec.spar_position:g} %"
-            if spar_position_tip is not None:
-                where += f" (tip {spar_position_tip:g} %)"
-            comments.append(
-                f"spar slots {spec.spar_width:g} mm wide at {where}: top {spec.spar_depth_top:g} mm, "
-                f"bottom {spec.spar_depth_bottom:g} mm deep"
-            )
+        comments += core_comments(spec)
         stats["core"] = {
             "te_cutback": {"root": round(cutbacks["root_te"], 1), "tip": round(cutbacks["tip_te"], 1)},
             "le_cutback": {"root": round(cutbacks["root_le"], 1), "tip": round(cutbacks["tip_le"], 1)},
+            "spars": sum(1 for sp in spec.spars if sp.depth_top > 0 or sp.depth_bottom > 0),
+            "channels": len(spec.channels),
         }
+        if spec.channels:
+            sides = sorted({c.side for c in spec.channels})
+            warnings.append(
+                f"{len(spec.channels)} servo channel(s) are reached through a slit from the {' and '.join(sides)} "
+                "surface, one kerf wide: tape or sheet over it."
+            )
         meet = max(cutbacks["root_te"], cutbacks["tip_te"])
         if spec.sheeted and meet > spec.te_stock + 0.5:
             warnings.append(
@@ -378,8 +390,8 @@ def _wing_part(part: dict[str, Any], machine: Machine, material: Material, place
         toolpath=wing_toolpath(layout, machine),
         z_root=layout.z_root,
         z_tip=layout.z_tip,
-        root_regions=[Region(layout.root_shape)],
-        tip_regions=[Region(layout.tip_shape)],
+        root_regions=[Region(layout.root_shape, layout.root_holes)],
+        tip_regions=[Region(layout.tip_shape, layout.tip_holes)],
         kerf=kerf,
         ratio=ratio,
         comments=comments,
@@ -387,6 +399,69 @@ def _wing_part(part: dict[str, Any], machine: Machine, material: Material, place
         stats=stats,
         skins=[(layout.root_skin, layout.tip_skin)] if built_up else [],
     )
+
+
+def legacy_spars(part: dict[str, Any]) -> list[Any]:
+    """Spars as a list, also reading the single-spar fields of earlier project files."""
+    spars = part.get("spars")
+    if spars:
+        return list(spars) if isinstance(spars, list) else spars
+    width = part.get("spar_width") or 0
+    if width and ((part.get("spar_depth_top") or 0) > 0 or (part.get("spar_depth_bottom") or 0) > 0):
+        return [{
+            "position": part.get("spar_position", 25.0),
+            "position_tip": part.get("spar_position_tip"),
+            "width": width,
+            "depth_top": part.get("spar_depth_top") or 0.0,
+            "depth_bottom": part.get("spar_depth_bottom") or 0.0,
+        }]  # fmt: skip
+    return []
+
+
+def _items(raw: Any, cls: type, label: str) -> tuple[Any, ...]:
+    if not isinstance(raw, list):
+        raise SliceError(f"{label}s must be a list")
+    allowed = {f.name for f in dataclasses.fields(cls)}
+    out = []
+    for number, item in enumerate(raw, start=1):
+        if not isinstance(item, dict):
+            raise SliceError(f"{label} {number} must be an object")
+        values = {k: v for k, v in item.items() if k in allowed}
+        for key, value in values.items():
+            if key != "side" and value is not None and (isinstance(value, bool) or not isinstance(value, (int, float))):
+                raise SliceError(f"{label} {number}: {key} must be a number")
+        try:
+            out.append(cls(**values))
+        except (TypeError, ValueError) as exc:
+            raise SliceError(f"{label} {number}: {exc}") from exc
+    return tuple(out)
+
+
+def core_comments(spec: CoreSpec) -> list[str]:
+    """G-code header lines describing a built-up core."""
+    lines = [
+        (
+            f"core: sheeting top {spec.sheeting_top:g} / bottom {spec.sheeting_bottom:g} mm, "
+            f"LE stock {spec.le_stock:g} mm, TE stock {spec.te_stock:g} mm"
+        )
+    ]
+
+    def where(item: Spar | Channel) -> str:
+        tip = f" (tip {item.position_tip:g} %)" if item.position_tip is not None else ""
+        return f"{item.position:g} %{tip}"
+
+    for number, spar in enumerate(spec.spars, start=1):
+        if spar.depth_top > 0 or spar.depth_bottom > 0:
+            lines.append(
+                f"spar {number}: {spar.width:g} mm wide at {where(spar)}, "
+                f"top {spar.depth_top:g} / bottom {spar.depth_bottom:g} mm deep"
+            )
+    for number, channel in enumerate(spec.channels, start=1):
+        lines.append(
+            f"servo channel {number}: {channel.diameter:g} mm at {where(channel)}, "
+            f"offset {channel.offset:g} mm, slit from the {channel.side}"
+        )
+    return lines
 
 
 def _drawing_source(part: dict[str, Any]) -> tuple[str, str, str]:

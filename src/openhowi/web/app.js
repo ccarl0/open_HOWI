@@ -64,13 +64,27 @@ const state = {
 
 // Project ---------------------------------------------------------------------
 
+// Projects saved before spars became a list had one spar as flat fields.
+function upgradePart(part) {
+  if (!part || Array.isArray(part.spars) || !('spar_width' in part)) return part;
+  const p = { ...part, spars: [] };
+  if (p.spar_width > 0 && (p.spar_depth_top > 0 || p.spar_depth_bottom > 0)) {
+    p.spars.push({
+      position: p.spar_position ?? 25, position_tip: p.spar_position_tip ?? null, width: p.spar_width,
+      depth_top: p.spar_depth_top || 0, depth_bottom: p.spar_depth_bottom || 0,
+    });
+  }
+  for (const k of ['spar_width', 'spar_depth_top', 'spar_depth_bottom', 'spar_position', 'spar_position_tip']) delete p[k];
+  return p;
+}
+
 function withDefaults(project) {
   const d = state.info.default_project;
   const type = project.part?.type || 'wing';
   return {
     ...clone(d), ...project,
     machine: { ...d.machine, ...project.machine }, material: { ...d.material, ...project.material },
-    part: { ...clone(state.info.default_parts[type] || {}), ...project.part },
+    part: { ...clone(state.info.default_parts[type] || {}), ...upgradePart(project.part) },
     placement: { ...clone(state.info.default_placements[type] || {}), ...project.placement },
   };
 }
@@ -266,9 +280,40 @@ function pickDrawingFile() {
   });
 }
 
+// A list of items (spars, servo channels), each edited with its own small form.
+function listField(f, value, set) {
+  const items = Array.isArray(value) ? value : [];
+  const box = el('div', { class: 'list-field' });
+  items.forEach((item, index) => {
+    const remove = el('button', { type: 'button', class: 'icon ghost', title: `Remove ${f.item_label.toLowerCase()} ${index + 1}` }, '✕');
+    remove.addEventListener('click', () => {
+      items.splice(index, 1);
+      set(items);
+      renderPartForm();
+    });
+    const card = el('div', { class: 'list-item' }, el('div', { class: 'list-head' }, el('span', {}, `${f.item_label} ${index + 1}`), remove));
+    for (const sub of f.item_fields) {
+      card.append(fieldEl(sub, item[sub.key], (v) => { item[sub.key] = v; set(items); }));
+    }
+    box.append(card);
+  });
+  if (!items.length && f.empty) box.append(el('p', { class: 'hint list-empty' }, f.empty));
+  if (items.length < (f.max || 8)) {
+    const add = el('button', { type: 'button', class: 'add' }, `+ ${f.add_label}`);
+    add.addEventListener('click', () => {
+      items.push(clone(f.default_item));
+      set(items);
+      renderPartForm();
+    });
+    box.append(add);
+  }
+  return el('div', { class: 'field wide', title: f.help }, box);
+}
+
 function fieldEl(f, value, set, showHelp) {
   const id = `f${uid++}`;
   let input;
+  if (f.type === 'list') return listField(f, value, set);
   if (f.type === 'select') {
     input = el('select', { id });
     for (const [v, label] of f.options) input.append(new Option(label, v, false, v === value));
@@ -483,6 +528,8 @@ function renderResult() {
       ? [['Core ends before TE', `root ${num(s.core.te_cutback.root, 1)} · tip ${num(s.core.te_cutback.tip, 1)} mm`]] : []),
     ...(s.core && (s.core.le_cutback.root > 0.05 || s.core.le_cutback.tip > 0.05)
       ? [['Core starts behind LE', `root ${num(s.core.le_cutback.root, 1)} · tip ${num(s.core.le_cutback.tip, 1)} mm`]] : []),
+    ...(s.core && (s.core.spars || s.core.channels)
+      ? [['Spars · servo channels', `${s.core.spars} · ${s.core.channels}`]] : []),
     ['Peak carriage speed', `${num(s.peak_speed.XY, 0)} · ${num(s.peak_speed.UV, 0)} mm/min`],
     [`${xy} range`, `X ${num(s.extents.XY[2], 0)} · Y ${num(s.extents.XY[3], 0)} mm`],
     [`${uv} range`, `X ${num(s.extents.UV[2], 0)} · Y ${num(s.extents.UV[3], 0)} mm`],
