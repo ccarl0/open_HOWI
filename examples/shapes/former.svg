@@ -1,0 +1,10 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!-- Example for open_HOWI: a fuselage former with lightening holes. Units: mm. -->
+<svg xmlns="http://www.w3.org/2000/svg" width="140mm" height="120mm" viewBox="0 0 140 120">
+  <!-- outline: flat bottom, straight sides, round top (SVG y points down) -->
+  <path d="M 20,110 L 120,110 L 120,60 A 50,50 0 0 0 20,60 Z"/>
+  <!-- lightening holes -->
+  <circle cx="70" cy="60" r="22"/>
+  <ellipse cx="40" cy="95" rx="10" ry="6"/>
+  <rect x="88" y="88" width="20" height="14" rx="3"/>
+</svg>

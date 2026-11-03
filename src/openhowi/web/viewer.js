@@ -1,0 +1,277 @@
+// SPDX-License-Identifier: GPL-3.0-or-later
+// 3D view of the machine: work area, foam block, part, carriage paths and the wire.
+// Scene axes: x = machine X (towards the foam), y = machine Y (up), z = position along the wire.
+import * as THREE from './vendor/three/three.module.min.js';
+import { OrbitControls } from './vendor/three/OrbitControls.js';
+
+function cssColor(name, fallback) {
+  const v = getComputedStyle(document.documentElement).getPropertyValue(name).trim();
+  return new THREE.Color(v || fallback);
+}
+
+function disposeGroup(group) {
+  for (const child of [...group.children]) {
+    group.remove(child);
+    child.traverse((o) => {
+      o.geometry?.dispose();
+      if (o.material) [].concat(o.material).forEach((m) => { m.map?.dispose(); m.dispose(); });
+    });
+  }
+}
+
+function textSprite(text, color) {
+  const canvas = document.createElement('canvas');
+  canvas.width = 128; canvas.height = 64;
+  const ctx = canvas.getContext('2d');
+  ctx.font = '600 40px system-ui, sans-serif';
+  ctx.fillStyle = color;
+  ctx.textAlign = 'center'; ctx.textBaseline = 'middle';
+  ctx.fillText(text, 64, 34);
+  const sprite = new THREE.Sprite(new THREE.SpriteMaterial({ map: new THREE.CanvasTexture(canvas), depthTest: false }));
+  sprite.scale.set(60, 30, 1);
+  return sprite;
+}
+
+export class Viewer {
+  constructor(canvas) {
+    this.canvas = canvas;
+    this.renderer = new THREE.WebGLRenderer({ canvas, antialias: true });
+    this.renderer.setPixelRatio(Math.min(window.devicePixelRatio, 2));
+    this.scene = new THREE.Scene();
+    this.camera = new THREE.PerspectiveCamera(40, 1, 1, 50000);
+    this.controls = new OrbitControls(this.camera, canvas);
+    this.controls.enableDamping = false;
+    this.controls.addEventListener('change', () => this.render());
+    this.controls.addEventListener('start', () => { this.userMoved = true; });
+
+    this.scene.add(new THREE.HemisphereLight(0xffffff, 0x8899aa, 1.6));
+    const sun = new THREE.DirectionalLight(0xffffff, 1.6);
+    sun.position.set(0.6, 1, 0.8);
+    this.scene.add(sun);
+
+    this.machineGroup = new THREE.Group();
+    this.partGroup = new THREE.Group();
+    this.pathGroup = new THREE.Group();
+    this.scene.add(this.machineGroup, this.partGroup, this.pathGroup);
+
+    this.wire = new THREE.Mesh(new THREE.CylinderGeometry(1.6, 1.6, 1, 8), new THREE.MeshBasicMaterial());
+    this.carriages = [0, 1].map(() => new THREE.Mesh(new THREE.BoxGeometry(14, 14, 14), new THREE.MeshStandardMaterial()));
+    this.scene.add(this.wire, ...this.carriages);
+
+    this.machine = { tower_distance: 1000, x_travel: 600, y_travel: 300 };
+    this.path = null;
+    this.readColors();
+    window.matchMedia('(prefers-color-scheme: dark)').addEventListener('change', () => {
+      this.readColors(); this.buildMachine(); this.rebuild(); this.render();
+    });
+    new ResizeObserver(() => this.resize()).observe(canvas.parentElement);
+    this.buildMachine();
+    this.setWire([0, 0], [0, 0]);
+    this.view('iso');
+  }
+
+  readColors() {
+    this.colors = {
+      bg: cssColor('--view-bg', '#e9edf2'), grid: cssColor('--view-grid', '#c9d0d9'),
+      frame: cssColor('--view-frame', '#8d97a3'), xy: cssColor('--xy', '#1c7ed6'), uv: cssColor('--uv', '#9c36b5'),
+      wire: cssColor('--wire', '#f03e3e'), part: cssColor('--part', '#f0dcae'), block: cssColor('--block', '#9fb3c8'),
+      muted: cssColor('--muted', '#66717e'),
+    };
+    this.scene.background = this.colors.bg;
+    this.wire.material.color = this.colors.wire;
+    this.carriages[0].material.color = this.colors.xy;
+    this.carriages[1].material.color = this.colors.uv;
+  }
+
+  resize() {
+    const { clientWidth: w, clientHeight: h } = this.canvas.parentElement;
+    if (!w || !h) return;
+    this.renderer.setSize(w, h, false);
+    this.camera.aspect = w / h;
+    this.camera.updateProjectionMatrix();
+    if (!this.userMoved) this.view(this.currentView || 'iso');
+    else this.render();
+  }
+
+  render() { this.renderer.render(this.scene, this.camera); }
+
+  setMachine(machine) {
+    const changed = ['tower_distance', 'x_travel', 'y_travel'].some((k) => machine[k] !== this.machine[k]);
+    this.machine = { ...machine };
+    if (changed) { this.buildMachine(); this.view(this.currentView || 'iso'); }
+  }
+
+  buildMachine() {
+    disposeGroup(this.machineGroup);
+    const { tower_distance: D, x_travel: X, y_travel: Y } = this.machine;
+    const grid = [];
+    const step = X > 800 || D > 1500 ? 100 : 50;
+    for (let x = 0; x <= X + 1e-6; x += step) grid.push(x, 0, 0, x, 0, D);
+    for (let z = 0; z <= D + 1e-6; z += step) grid.push(0, 0, z, X, 0, z);
+    const gridGeom = new THREE.BufferGeometry();
+    gridGeom.setAttribute('position', new THREE.Float32BufferAttribute(grid, 3));
+    this.machineGroup.add(new THREE.LineSegments(gridGeom, new THREE.LineBasicMaterial({ color: this.colors.grid })));
+
+    const frame = [];
+    for (const z of [0, D]) {
+      frame.push(0, 0, z, X, 0, z, X, 0, z, X, Y, z, X, Y, z, 0, Y, z, 0, Y, z, 0, 0, z);
+    }
+    frame.push(0, Y, 0, 0, Y, D, X, Y, 0, X, Y, D);
+    const frameGeom = new THREE.BufferGeometry();
+    frameGeom.setAttribute('position', new THREE.Float32BufferAttribute(frame, 3));
+    this.machineGroup.add(new THREE.LineSegments(frameGeom, new THREE.LineBasicMaterial({ color: this.colors.frame })));
+
+    const labels = [['XY', this.colors.xy, 0], ['UV', this.colors.uv, D]];
+    for (const [text, color, z] of labels) {
+      const s = textSprite(text, `#${color.getHexString()}`);
+      s.position.set(-30, Y + 20, z);
+      this.machineGroup.add(s);
+    }
+    const origin = textSprite('0', `#${this.colors.muted.getHexString()}`);
+    origin.position.set(-18, -12, 0);
+    origin.scale.set(36, 18, 1);
+    this.machineGroup.add(origin);
+  }
+
+  view(name) {
+    this.currentView = name;
+    this.userMoved = false;
+    const { tower_distance: D, x_travel: X, y_travel: Y } = this.machine;
+    const target = new THREE.Vector3(X / 2, Y / 2, D / 2);
+    const dir = {
+      iso: new THREE.Vector3(0.75, 0.55, 0.75),
+      profile: new THREE.Vector3(0, 0, 1),
+      top: new THREE.Vector3(0, 1, 0.001),
+      side: new THREE.Vector3(1, 0, 0),
+    }[name].normalize();
+    // Fit the bounding sphere of the work volume into the narrower field of view.
+    const radius = 0.5 * (name === 'profile' ? Math.hypot(X, Y) : Math.hypot(X, Y, D));
+    const vfov = THREE.MathUtils.degToRad(this.camera.fov);
+    const hfov = 2 * Math.atan(Math.tan(vfov / 2) * this.camera.aspect);
+    // The sphere is conservative when height limits the view; when width does (narrow screens),
+    // the box spans almost the whole sphere, so keep a small margin instead.
+    const dist = (radius / Math.sin(Math.min(vfov, hfov) / 2)) * (hfov < vfov ? 1.04 : 0.92);
+    if (name === 'profile') target.z = D;
+    this.camera.position.copy(target).addScaledVector(dir, dist);
+    this.controls.target.copy(target);
+    this.controls.update();
+    this.render();
+  }
+
+  clearPart() {
+    disposeGroup(this.partGroup);
+    disposeGroup(this.pathGroup);
+    this.path = null;
+    this.render();
+  }
+
+  setResult(result) {
+    this.result = result;
+    this.setMachine(result.machine);
+    this.rebuild();
+  }
+
+  rebuild() {
+    disposeGroup(this.partGroup);
+    disposeGroup(this.pathGroup);
+    const r = this.result;
+    if (!r) { this.render(); return; }
+    const D = r.machine.tower_distance;
+
+    // Foam block
+    const b = r.block;
+    const box = new THREE.BoxGeometry(b.x1 - b.x0, b.y1 - b.y0, b.z1 - b.z0);
+    box.translate((b.x0 + b.x1) / 2, (b.y0 + b.y1) / 2, (b.z0 + b.z1) / 2);
+    this.partGroup.add(new THREE.Mesh(box, new THREE.MeshStandardMaterial({
+      color: this.colors.block, transparent: true, opacity: 0.12, depthWrite: false,
+    })));
+    this.partGroup.add(new THREE.LineSegments(new THREE.EdgesGeometry(box),
+      new THREE.LineBasicMaterial({ color: this.colors.block, transparent: true, opacity: 0.7 })));
+
+    // Part: each solid is a loft between its root and tip faces (outline and holes), plus end caps
+    const partMat = new THREE.MeshStandardMaterial({
+      color: this.colors.part, roughness: 0.85, side: THREE.DoubleSide, flatShading: r.kind === 'shape',
+    });
+    for (const solid of r.part.solids) this.addSolid(solid, r.part.z_root, r.part.z_tip, partMat);
+    // Finished outline (e.g. the sheeted airfoil) around the core, at both faces
+    const skinMat = new THREE.LineBasicMaterial({ color: this.colors.frame, transparent: true, opacity: 0.9 });
+    for (const skin of r.part.skins || []) {
+      for (const [pts, z] of [[skin.root, r.part.z_root], [skin.tip, r.part.z_tip]]) {
+        const geom = new THREE.BufferGeometry();
+        geom.setAttribute('position', new THREE.Float32BufferAttribute(pts.flatMap(([x, y]) => [x, y, z]), 3));
+        this.partGroup.add(new THREE.LineLoop(geom, skinMat));
+      }
+    }
+
+    // Carriage paths: faint full path, bright overlay for the part already cut
+    const p = r.path;
+    this.path = p;
+    this.overlays = [];
+    for (const [key, z, color] of [['xy', 0, this.colors.xy], ['uv', D, this.colors.uv]]) {
+      const geom = new THREE.BufferGeometry();
+      geom.setAttribute('position', new THREE.Float32BufferAttribute(p[key].flatMap(([x, y]) => [x, y, z]), 3));
+      this.pathGroup.add(new THREE.Line(geom, new THREE.LineBasicMaterial({ color, transparent: true, opacity: 0.3 })));
+      const done = new THREE.Line(geom.clone(), new THREE.LineBasicMaterial({ color }));
+      this.pathGroup.add(done);
+      this.overlays.push(done);
+    }
+    this.setProgress(p.t.length - 1, 1);
+  }
+
+  addSolid(solid, zr, zt, material) {
+    // Rings without a repeated end point; root and tip rings are index-matched.
+    const ring = (pts) => (pts.length > 2 && pts[0][0] === pts.at(-1)[0] && pts[0][1] === pts.at(-1)[1] ? pts.slice(0, -1) : pts);
+    const rootRings = [solid.root.outer, ...solid.root.holes].map(ring);
+    const tipRings = [solid.tip.outer, ...solid.tip.holes].map(ring);
+    rootRings.forEach((rootRing, k) => {
+      const tipRing = tipRings[k];
+      const n = rootRing.length;
+      const verts = [];
+      for (const [pts, z] of [[rootRing, zr], [tipRing, zt]]) for (const [x, y] of pts) verts.push(x, y, z);
+      const idx = [];
+      for (let i = 0; i < n; i++) {
+        const j = (i + 1) % n;
+        idx.push(i, j, n + i, j, n + j, n + i);
+      }
+      const side = new THREE.BufferGeometry();
+      side.setAttribute('position', new THREE.Float32BufferAttribute(verts, 3));
+      side.setIndex(idx);
+      side.computeVertexNormals();
+      this.partGroup.add(new THREE.Mesh(side, material));
+    });
+    for (const [rings, z] of [[rootRings, zr], [tipRings, zt]]) {
+      const [outer, ...holes] = rings.map((pts) => pts.map(([x, y]) => new THREE.Vector2(x, y)));
+      const tris = THREE.ShapeUtils.triangulateShape(outer, holes);
+      const all = [outer, ...holes].flat();
+      const cap = new THREE.BufferGeometry();
+      cap.setAttribute('position', new THREE.Float32BufferAttribute(all.flatMap((p) => [p.x, p.y, z]), 3));
+      cap.setIndex(tris.flat());
+      cap.computeVertexNormals();
+      this.partGroup.add(new THREE.Mesh(cap, material));
+    }
+  }
+
+  // Show the cut up to segment `i` (index into path arrays), `frac` of the way into it.
+  setProgress(i, frac) {
+    const p = this.path;
+    if (!p) return;
+    i = Math.max(0, Math.min(i, p.t.length - 1));
+    for (const line of this.overlays) line.geometry.setDrawRange(0, i + 1);
+    const lerp = (a, b) => [a[0] + (b[0] - a[0]) * frac, a[1] + (b[1] - a[1]) * frac];
+    const j = Math.min(i + 1, p.t.length - 1);
+    this.setWire(lerp(p.xy[i], p.xy[j]), lerp(p.uv[i], p.uv[j]));
+  }
+
+  setWire(xy, uv) {
+    const D = this.machine.tower_distance;
+    const a = new THREE.Vector3(xy[0], xy[1], 0);
+    const b = new THREE.Vector3(uv[0], uv[1], D);
+    const dir = b.clone().sub(a);
+    this.wire.scale.set(1, dir.length(), 1);
+    this.wire.position.copy(a.clone().add(b).multiplyScalar(0.5));
+    this.wire.quaternion.setFromUnitVectors(new THREE.Vector3(0, 1, 0), dir.normalize());
+    this.carriages[0].position.copy(a);
+    this.carriages[1].position.copy(b);
+    this.render();
+  }
+}

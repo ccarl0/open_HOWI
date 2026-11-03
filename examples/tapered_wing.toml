@@ -1,0 +1,35 @@
+# A tapered, swept wing panel with washout.
+#   openhowi wing examples/tapered_wing.toml --svg preview.svg
+# All lengths in mm, speeds in mm/min, angles in degrees.
+
+title = "Tapered wing panel"
+
+[machine]
+tower_distance = 1000.0     # distance between the XY and UV carriages
+x_travel = 500.0
+y_travel = 250.0
+axis_letters = "XYUV"       # letters your controller uses for the four axes
+cut_feed = 180.0            # wire speed through the foam, at the faster end of the panel
+travel_feed = 600.0         # speed through air
+feed_mode = "inverse-time"  # G93; use "units-per-minute" if your controller lacks G93
+wire_power = 600            # S value for M3 (wire heat); remove to switch the wire by hand
+preheat = 3.0               # seconds to let the wire heat up before moving
+
+[wing]
+root_airfoil = "naca2412"   # "nacaXXXX" or a path to a Selig/Lednicer .dat file
+tip_airfoil = "naca2410"
+root_chord = 250.0
+tip_chord = 160.0
+span = 600.0
+sweep = 40.0                # tip leading edge this far aft of the root leading edge
+washout = 1.5               # tip twisted nose-down
+washout_pivot = 0.25        # twist axis, fraction of chord
+root_kerf = 1.0             # measured slot width at the root
+tip_kerf = 1.3              # the slower tip end melts a wider slot
+points_per_surface = 80
+
+[placement]
+root_side = "xy"            # swap to "uv" for the opposite-hand panel
+root_offset = 200.0         # root face distance from the XY carriage
+x_margin = 25.0             # machine X of the trailing edge; foam rear face goes between X=0 and here
+y_offset = 40.0             # machine Y of the root chord line
