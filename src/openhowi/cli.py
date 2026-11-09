@@ -174,9 +174,10 @@ def cmd_gui(args: argparse.Namespace) -> int:
 
 
 def cmd_slice(args: argparse.Namespace) -> int:
+    import copy
     import json
 
-    from .project import SliceError, slice_project
+    from .project import SliceError, fuselage_plans, slice_project
 
     try:
         project = json.loads(Path(args.project).read_text(encoding="utf-8"))
@@ -184,7 +185,29 @@ def cmd_slice(args: argparse.Namespace) -> int:
     except (OSError, json.JSONDecodeError, SliceError) as exc:
         return _err(str(exc))
     output = Path(args.output or Path(args.project).name.removesuffix(".json").removesuffix(".howi") + ".gcode")
-    code = _report(result, output)
+    jobs = result.data.get("jobs") or []
+    if len(jobs) > 1:  # several cuts (fuselage passes or segments): one G-code file each
+        code = 0
+        for number, job in enumerate(jobs, start=1):
+            each = copy.deepcopy(project)
+            each.setdefault("part", {})["job"] = number
+            try:
+                part_result = slice_project(each)
+            except SliceError as exc:
+                return _err(f"cut {number} ({job['label']}): {exc}")
+            print(f"Cut {number} of {len(jobs)}: {job['label']}")
+            for note in part_result.data.get("notes") or []:
+                print(f"  {note}")
+            code |= _report(part_result, output.with_name(f"{output.stem}-{number}{output.suffix}"))
+    else:
+        code = _report(result, output)
+    if args.plans:
+        try:
+            _, svg = fuselage_plans(project)
+        except SliceError as exc:
+            return _err(f"--plans: {exc}")
+        Path(args.plans).write_text(svg, encoding="utf-8")
+        print(f"Wrote {args.plans} (print at 100 %)")
     if args.bay_template:
         if result.wing is None or not result.wing.bays:
             return _err("--bay-template: this project has no servo bays")
@@ -277,6 +300,7 @@ def build_parser() -> argparse.ArgumentParser:
     p.add_argument("project")
     p.add_argument("-o", "--output", help="G-code file to write (default: <project name>.gcode)")
     p.add_argument("--bay-template", metavar="SVG", help="also write the 1:1 servo bay template")
+    p.add_argument("--plans", metavar="SVG", help="fuselages: also write the 1:1 plans and formers")
     p.set_defaults(func=cmd_slice)
 
     p = sub.add_parser("shape", help="cut the closed outlines of an SVG or DXF drawing")

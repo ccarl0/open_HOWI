@@ -128,8 +128,8 @@ def test_http_same_origin_write(server):
 
 def test_part_types_and_shape_inspect(app):
     info = app.handle("GET", "/api/info", {})
-    assert [t["type"] for t in info["part_types"]] == ["wing", "shape"]
-    assert {"wing", "shape"} == set(info["schema"]["part"]) == set(info["default_parts"])
+    assert [t["type"] for t in info["part_types"]] == ["wing", "shape", "fuselage"]
+    assert {"wing", "shape", "fuselage"} == set(info["schema"]["part"]) == set(info["default_parts"])
     svg = '<svg xmlns="http://www.w3.org/2000/svg" width="10mm" height="10mm" viewBox="0 0 10 10"><rect width="10" height="10"/></svg>'
     r = app.handle("POST", "/api/shapes/inspect", {"filename": "sq.svg", "data": svg})
     assert r["shapes"] == 1 and r["size"] == [10, 10]
@@ -158,3 +158,14 @@ def test_bay_template_endpoint(app):
     assert result["filename"].endswith("-servo-bays.svg") and result["svg"].startswith("<svg")
     with pytest.raises(ApiError, match="no servo bays"):
         app.handle("POST", "/api/template/bays", {"project": default_project()})
+
+
+def test_fuselage_plans_endpoint(app):
+    info = app.handle("GET", "/api/info", {})
+    project = default_project()
+    project["part"] = info["default_parts"]["fuselage"]
+    project["placement"] = info["default_placements"]["fuselage"]
+    result = app.handle("POST", "/api/slice", {"project": project})
+    assert [j["label"] for j in result["jobs"]] == ["Pass 1 · side view", "Pass 2 · top view"]
+    plans = app.handle("POST", "/api/template/fuselage", {"project": project})
+    assert plans["filename"] == "Fuselage-plans.svg" and "Formers" in plans["svg"]

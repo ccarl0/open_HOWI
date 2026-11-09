@@ -32,7 +32,7 @@ the `openhowi` process. It works offline.
 
 | Tab | What it does |
 |---|---|
-| **Prepare** | Choose a **machine** and a **material** preset, then set up the part: a **wing panel** (root/tip airfoils from the built-in database, NACA or any `.dat` file, chords, span, sweep, washout, sheeting allowance, LE/TE stock, spar slots, servo channels, joiner holes and servo bays) or a **2D shape** from a DXF or SVG drawing. The part, the foam block and both carriage paths update live in 3D as you type. |
+| **Prepare** | Choose a **machine** and a **material** preset, then set up the part: a **wing panel** (root/tip airfoils from the built-in database, NACA or any `.dat` file, chords, span, sweep, washout, sheeting allowance, LE/TE stock, spar slots, servo channels, joiner holes and servo bays), a **fuselage** (stations or side/top drawings, cut in two views or as rounded lengthwise segments) or a **2D shape** from a DXF or SVG drawing. The part, the foam block and both carriage paths update live in 3D as you type. |
 | **Preview** | Estimated time, cut lengths, kerf at each end, peak carriage speeds, the foam block you need and where to put it. Scrub or play back the cut with the timeline. Export G-code. |
 | **Device** | Connect over USB (or to the built-in **simulator**), live position, jog both carriages together or separately, home, unlock, set zero, wire on/off, start/pause/resume/stop the job, console. A **STOP** button (feed hold + reset, wire off) stays in the top bar while connected. |
 
@@ -135,6 +135,44 @@ Switch the part to **2D shape** and load a drawing: fuselage formers, ribs, lett
 Try `examples/shapes/former.svg` (one shape, three holes) and `examples/shapes/star_and_d.dxf`
 (two shapes, a block insert and an outline drawn as separate lines and an arc).
 
+### Fuselages
+
+Switch the part to **Fuselage** and describe it either with a table of **stations** (distance from the
+nose, top and bottom height above a datum line, width, and how round the upper and lower half of
+the section are: 100 % elliptical, 0 % square, so a flat-bottomed box with a rounded top is easy),
+or by loading a **side view and a top view** drawing (DXF/SVG, nose on the left). Between stations
+the lines run smoothly without overshooting.
+
+![Fuselage, pass 1 of the two-view cut: the side-view slab with the finished fuselage inside](docs/fuselage.png)
+
+Two ways to cut it (pick the cut to slice in the selector above *Export G-code*; *Export all cuts*
+writes one G-code file per cut, and *Preview → Cutting steps* says how to set up each one):
+
+- **Two views** (two passes). Pass 1 cuts the side view's top and bottom lines from one end of the
+  block to the other, so the slab keeps the block's flat end faces; for pass 2 it lies on its side
+  against the same stop and the top view is cut out. Round the corners off by hand, checking with
+  the formers.
+- **Lengthwise segments.** The wire runs along the fuselage and every segment (up to the length you
+  set) is a ruled surface between its two end sections, like a wing panel, so the sections come out
+  **rounded**. Segments can be **hollow** (a wall thickness; a full segment is reached through a slit
+  along the bottom) or cut as **left and right half shells** that need no slit and glue along the
+  centre line. Each segment's larger end goes next to the carriage you measure from; when a steep
+  segment would swing the far carriage below zero the app lifts the foam and tells you how much.
+
+![A hollow half shell of a fuselage segment, with the cutting steps](docs/fuselage-segments.png)
+
+- **Wing saddles**: give the wing's airfoil (from the database), chord, leading-edge position and
+  height and incidence, on top (high wing) or underneath (low wing): the fuselage's top or bottom
+  line takes the airfoil's shape there, and the formers under the wing stop at it.
+- **Plans & formers** (*Preview*, or `openhowi slice … --plans plans.svg`): a 1:1 SVG with the side
+  and top views, the datum, the stations, the wing, and every former (drawn inside the planking
+  thickness you give), with a 50 mm check bar.
+
+![Fuselage plans: side and top views with stations and the wing saddle, and the formers](docs/fuselage-plans.png)
+
+`examples/sport_fuselage.howi.json` is a ready-made fuselage with a wing saddle, and
+`examples/fuselage/side.svg` / `top.svg` are the same fuselage as drawings.
+
 **Run it on a Raspberry Pi** at the machine and use it from another computer on your network:
 `openhowi gui --host 0.0.0.0 --no-browser`. Anyone who can reach that address can move the
 machine, so only do this on a network you trust.
@@ -194,6 +232,7 @@ way. Switch the machine preset to *Units per minute (G94)* only if yours lacks G
 
 ```bash
 openhowi slice my-wing.howi.json -o my-wing.gcode   # slice a project saved from the app
+openhowi slice examples/sport_fuselage.howi.json --plans plans.svg   # one G-code file per cut, plus 1:1 plans
 openhowi shape former.svg --span 80 --material "XPS extruded (blue/pink)"   # cut a DXF/SVG drawing
 openhowi wing examples/tapered_wing.toml --svg wing.svg   # TOML job file, explicit kerf values
 openhowi wing examples/sheeted_wing.toml --bay-template bays.svg   # built-up core + 1:1 servo bay template
@@ -219,7 +258,8 @@ openhowi naca 2412 -o naca2412.dat                   # write a NACA 4-digit airf
 - Arrange several parts in one block automatically; lead-ins from below or the side when shapes block each other
 - Wing-root dowel and hold-down holes on the template; cutting short joiner holes with a heated tube
 - Homing/limit-aware placement and a block-size optimiser
-- Rotary-table (5th axis) support
+- Fuselages: sections from drawn formers (lofts between two different drawings), fin slots and hatch lines
+- Rotary-table (5th axis) support for fully round bodies (spinners, round fuselages)
 - Packaged desktop builds (one-click install on Windows/macOS)
 
 ## Development
@@ -234,8 +274,9 @@ ruff check src tests && ruff format --check src tests
 |---|---|
 | `airfoil`, `airfoildb`, `geometry`, `wing`, `core` | Airfoil parsing/generation and the airfoil database, 2D geometry, wing sections with sheeting, stock, slots, channels, joiners and servo bays |
 | `svgimport`, `dxfimport`, `curves`, `shapes` | Drawing import, curve flattening, outlines/holes, kerf and cut planning for 2D shapes |
+| `fuselage`, `fusecut` | Fuselage stations/views, rounded sections and saddles; two-view passes and lengthwise segments |
 | `toolpath`, `gcode` | Placement, the 4-axis projection, feed timing and G-code output |
-| `material`, `presets`, `project`, `calibration`, `template` | Slicer layer: presets, kerf model, project slicing, kerf test, servo bay template |
+| `material`, `presets`, `project`, `calibration`, `template` | Slicer layer: presets, kerf model, project slicing, kerf test, servo bay template and fuselage plans |
 | `simulator`, `controller`, `sender` | Simulated GRBL, the threaded device controller, the CLI streamer |
 | `server`, `web/` | Local HTTP API and the browser UI (three.js r179 vendored under `web/vendor`) |
 

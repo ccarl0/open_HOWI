@@ -44,6 +44,7 @@
         <span><i class="sw wire"></i>Wire</span>
         <span><i class="sw part"></i>Part</span>
         <span id="legend-bay" hidden><i class="sw bay"></i>Servo bay (cut by hand)</span>
+        <span id="legend-ghost" hidden><i class="sw ghost"></i>Finished shape (after sanding)</span>
       </div>
       <div class="banner" id="banner" hidden></div>
       <div class="busy" id="busy" hidden>Slicing…</div>
@@ -97,6 +98,14 @@
           <div class="row" id="bay-row" hidden>
             <button id="btn-bays">Servo bay template</button>
             <span class="hint">1:1 SVG: print at 100 % and cut the bays by hand</span>
+          </div>
+        </section>
+        <section class="card" id="steps-card" hidden>
+          <h2>Cutting steps <span class="pill" id="steps-pill"></span></h2>
+          <ol class="steps" id="job-notes"></ol>
+          <div class="row wrap">
+            <button id="btn-export-all">Export all cuts</button>
+            <button id="btn-plans">Plans &amp; formers (SVG)</button>
           </div>
         </section>
         <section class="card">
@@ -184,6 +193,10 @@
       </div>
 
       <footer class="sidebar-footer">
+        <div class="job-row" id="job-row" hidden>
+          <label for="sel-job">Cut</label>
+          <select id="sel-job"></select>
+        </div>
         <div class="summary" id="summary">—</div>
         <div class="row">
           <button id="btn-export" class="primary">Export G-code</button>

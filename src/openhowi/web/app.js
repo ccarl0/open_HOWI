@@ -54,10 +54,11 @@ function download(name, text, type = 'text/plain') {
   setTimeout(() => URL.revokeObjectURL(url), 1000);
 }
 const slug = (s) => (s || 'part').toLowerCase().replace(/[^a-z0-9]+/g, '-').replace(/^-|-$/g, '') || 'part';
+const projectName = () => state.project.title || { wing: 'wing-panel', shape: 'shape', fuselage: 'fuselage' }[partType()] || 'part';
 
 const state = {
   info: null, presets: { machine: [], material: [] }, airfoils: { naca: [], library: [], database: [] }, foilDb: null,
-  project: null, result: null, sliceSeq: 0, sliceTimer: null, tab: 'prepare', stash: {}, drawingInfo: null,
+  project: null, result: null, sliceSeq: 0, sliceTimer: null, tab: 'prepare', stash: {}, drawingInfo: null, viewInfo: {},
   device: { connected: false, status: { state: 'Disconnected' }, job: null, lastLog: 0, polling: false },
   scrub: { t: Infinity, playing: false },
 };
@@ -312,19 +313,57 @@ function drawingSummary(info) {
 }
 
 function drawingField(f, value, set) {
+  const main = f.key === 'source';  // the 2D shape's drawing; fuselages have a side and a top view
+  const info = main ? state.drawingInfo : state.viewInfo[f.key];
+  const meta = value
+    ? (main ? drawingSummary(info) : (info ? `${num(info.size[0], 1)} × ${num(info.size[1], 1)} mm` : ''))
+    : (main ? 'SVG or DXF with closed outlines' : f.help);
   const box = el('div', { class: `drawing-box${value ? '' : ' empty'}` },
+    main ? null : el('div', { class: 'meta' }, f.label),
     el('div', { class: 'name' }, value ? value.name : 'No drawing loaded'),
-    el('div', { class: 'meta', id: 'drawing-meta' }, value ? drawingSummary(state.drawingInfo) : 'SVG or DXF with closed outlines'));
+    el('div', { class: 'meta', id: main ? 'drawing-meta' : undefined }, meta));
   const button = el('button', { type: 'button', class: value ? '' : 'primary' }, value ? 'Replace…' : 'Load DXF or SVG…');
   button.addEventListener('click', async () => {
     const picked = await pickDrawingFile();
     if (!picked) return;
-    if (!state.project.title) state.project.title = picked.name.replace(/\.[^.]+$/, '');
+    if (!main) state.viewInfo[f.key] = state.drawingInfo;
+    if (!state.project.title && main) state.project.title = picked.name.replace(/\.[^.]+$/, '');
     set(picked);
     renderSettings();
   });
   box.append(button);
   return el('div', { class: 'field drawing', title: f.help }, box);
+}
+
+// A table of numbers (fuselage stations): one row per item.
+function tableField(f, value, set) {
+  const rows = Array.isArray(value) ? value : [];
+  const cols = f.columns;
+  const table = el('div', { class: 'table-field', style: `--cols: ${cols.length}` },
+    el('div', { class: 'table-row head' },
+      ...cols.map((c) => el('span', { title: c.help || '' }, c.label, c.unit ? el('small', {}, c.unit) : null)), el('span')));
+  rows.forEach((row, i) => {
+    const line = el('div', { class: 'table-row' });
+    for (const c of cols) {
+      const input = numberInput(`f${uid++}`, c, row[c.key], (v) => { row[c.key] = v; set(rows); });
+      input.setAttribute('aria-label', `${c.label}, row ${i + 1}`);
+      if (c.help) input.title = c.help;
+      line.append(input);
+    }
+    const remove = el('button', { type: 'button', class: 'icon ghost', title: `Remove row ${i + 1}`, disabled: rows.length <= (f.min_rows || 0) }, '✕');
+    remove.addEventListener('click', () => { rows.splice(i, 1); set(rows); renderPartForm(); });
+    line.append(remove);
+    table.append(line);
+  });
+  const add = el('button', { type: 'button', class: 'add' }, `+ ${f.add_label || 'Add row'}`);
+  add.addEventListener('click', () => {
+    const last = rows.at(-1) || Object.fromEntries(cols.map((c) => [c.key, 0]));
+    rows.push({ ...last, ...('x' in last ? { x: (Number(last.x) || 0) + 50 } : {}) });
+    set(rows);
+    renderPartForm();
+  });
+  if (rows.length >= (f.max || 40)) add.disabled = true;
+  return el('div', { class: 'field wide' }, el('div', { class: 'list-field' }, table, f.help ? el('p', { class: 'hint' }, f.help) : null, add));
 }
 
 function pickDrawingFile() {
@@ -390,6 +429,7 @@ function fieldEl(f, value, set, showHelp) {
   const id = `f${uid++}`;
   let input;
   if (f.type === 'list') return listField(f, value, set);
+  if (f.type === 'table') return tableField(f, value, set);
   if (f.type === 'select') {
     input = el('select', { id });
     for (const [v, label] of f.options) input.append(new Option(label, v, false, v === value));
@@ -420,12 +460,18 @@ function fieldEl(f, value, set, showHelp) {
 function buildForm(container, fields, values, onChange, showHelp = false) {
   container.replaceChildren();
   let group = null;
+  const controls = new Set(fields.flatMap((f) => Object.keys(f.show_if || {})));
+  const rebuild = () => buildForm(container, fields, values, onChange, showHelp);
   for (const f of fields) {
+    if (!Object.entries(f.show_if || {}).every(([k, v]) => values[k] === v)) continue;
     if (f.group && f.group !== group) {
       group = f.group;
       container.append(el('div', { class: 'group-title' }, group));
     }
-    container.append(fieldEl(f, values[f.key], (v) => onChange(f.key, v), showHelp));
+    container.append(fieldEl(f, values[f.key], (v) => {
+      onChange(f.key, v);
+      if (controls.has(f.key)) rebuild();
+    }, showHelp));
   }
 }
 
@@ -447,7 +493,7 @@ function renderPartType() {
 function renderSettings() {
   renderPartType();
   $('#project-title').value = state.project.title || '';
-  $('#project-title').placeholder = partType() === 'wing' ? 'Wing panel' : '2D shape';
+  $('#project-title').placeholder = { wing: 'Wing panel', shape: '2D shape', fuselage: 'Fuselage' }[partType()] || 'Part';
   renderPartForm();
   buildForm($('#placement-form'), state.info.schema.placement[partType()] || [], state.project.placement, (k, v) => {
     state.project.placement[k] = v; changed();
@@ -535,15 +581,17 @@ function renderThumbs() {
   if (!r) return;
   const p = state.project.part;
   let faces;
-  if (r.kind === 'wing') {
+  if (r.views && r.views.length) {
+    faces = r.views.map((v) => [v.label, null, '', v.rings]);
+  } else if (r.kind === 'wing') {
     faces = [['Root', 'root', r.stats.airfoils.root], ['Tip', 'tip', r.stats.airfoils.tip]];
   } else {
     const tapered = (p.tip_scale ?? 100) !== 100 || p.tip_offset_x || p.tip_offset_y;
     faces = tapered ? [['Root', 'root', ''], ['Tip', 'tip', '']] : [['Shape', 'root', r.stats.drawing.name]];
   }
-  for (const [label, face, name] of faces) {
-    const rings = r.part.solids.flatMap((sd) => [sd[face].outer, ...sd[face].holes]);
-    const skins = (r.part.skins || []).map((sk) => sk[face]);
+  for (const [label, face, name, own] of faces) {
+    const rings = own || r.part.solids.flatMap((sd) => [sd[face].outer, ...sd[face].holes]);
+    const skins = own ? [] : (r.part.skins || []).map((sk) => sk[face]);
     const pts = rings.flat().concat(skins.flat());
     const xs = pts.map((q) => q[0]); const ys = pts.map((q) => q[1]);
     const x0 = Math.min(...xs); const x1 = Math.max(...xs); const y0 = Math.min(...ys); const y1 = Math.max(...ys);
@@ -583,12 +631,14 @@ function renderResult() {
     $('#summary').textContent = 'Fix the settings to slice.';
     $('#block-hint').textContent = '';
     $('#gcode-view').textContent = '';
+    renderJobs(null);
     updateScrubber();
     return;
   }
   const s = r.stats; const a = r.machine.axis_letters;
   const xy = a.slice(0, 2); const uv = a.slice(2);
   const slow = s.speed_ratio.tip < s.speed_ratio.root ? 'tip' : 'root';
+  const ends = r.kind === 'fuselage' ? { root: 'larger end', tip: 'smaller end' } : { root: 'root', tip: 'tip' };
   if (s.drawing) {
     state.drawingInfo = s.drawing;
     const meta = $('#drawing-meta');
@@ -598,8 +648,8 @@ function renderResult() {
     ['Estimated time', fmtTime(s.time_s)],
     ...(s.drawing ? [['Drawing', drawingSummary(s.drawing)]] : []),
     ['Cut length', `${xy} ${num(s.cut_length.XY, 0)} · ${uv} ${num(s.cut_length.UV, 0)} mm`],
-    ['Kerf', `root ${num(s.kerf.root, 2)} · tip ${num(s.kerf.tip, 2)} mm`],
-    ...(s.speed_ratio[slow] < 0.999 ? [['Slower end', `${slow}, ${Math.round(s.speed_ratio[slow] * 100)} % of cut speed`]] : []),
+    ['Kerf', `${ends.root} ${num(s.kerf.root, 2)} · ${ends.tip} ${num(s.kerf.tip, 2)} mm`],
+    ...(s.speed_ratio[slow] < 0.999 ? [['Slower end', `${ends[slow]}, ${Math.round(s.speed_ratio[slow] * 100)} % of cut speed`]] : []),
     ...(s.core && (s.core.te_cutback.root > 0.05 || s.core.te_cutback.tip > 0.05)
       ? [['Core ends before TE', `root ${num(s.core.te_cutback.root, 1)} · tip ${num(s.core.te_cutback.tip, 1)} mm`]] : []),
     ...(s.core && (s.core.le_cutback.root > 0.05 || s.core.le_cutback.tip > 0.05)
@@ -609,6 +659,10 @@ function renderResult() {
     ...(s.core?.bays || []).map((b) => [`Servo bay ${b.number}`,
       `${b.size.map((v) => num(v, 1).replace(/\.0$/, '')).join(' × ')} mm, ${b.side}; ${num(b.from_root, 1)} mm from the root, `
       + `${num(b.behind_front, 1)} mm behind the front${b.channels.length ? `; reaches channel ${b.channels.join(', ')}` : ''}`]),
+    ...(s.fuselage ? [
+      ['Fuselage', `${num(s.fuselage.length, 0)} × ${num(s.fuselage.width, 0)} × ${num(s.fuselage.height, 0)} mm · ${num(s.fuselage.volume_l, 2)} l`],
+      ['This cut', `${r.job} of ${r.jobs.length}: ${s.fuselage.cut}`],
+    ] : []),
     ['Peak carriage speed', `${num(s.peak_speed.XY, 0)} · ${num(s.peak_speed.UV, 0)} mm/min`],
     [`${xy} range`, `X ${num(s.extents.XY[2], 0)} · Y ${num(s.extents.XY[3], 0)} mm`],
     [`${uv} range`, `X ${num(s.extents.UV[2], 0)} · Y ${num(s.extents.UV[3], 0)} mm`],
@@ -619,6 +673,8 @@ function renderResult() {
   const hasBays = (r.part.bays || []).length > 0;
   $('#bay-row').hidden = !hasBays;
   $('#legend-bay').hidden = !hasBays;
+  $('#legend-ghost').hidden = !(r.part.ghosts || []).length;
+  renderJobs(r);
 
   const b = r.block;
   const size = `${num(b.x1 - b.x0, 0)} × ${num(b.y1 - b.y0, 0)} × ${num(b.z1 - b.z0, 0)} mm`;
@@ -629,6 +685,43 @@ function renderResult() {
   const lines = r.gcode.split('\n');
   $('#gcode-view').textContent = lines.slice(0, 400).join('\n') + (lines.length > 400 ? `\n… ${lines.length - 400} more lines` : '');
   updateScrubber();
+}
+
+// Parts cut in several goes (fuselage passes and segments): pick the cut, see its steps.
+function renderJobs(r) {
+  // Keep the last list when a cut fails to slice, so another cut can still be picked.
+  if (r) state.jobs = { type: r.kind, list: r.jobs || [] };
+  const jobs = state.jobs && state.jobs.type === partType() ? state.jobs.list : [];
+  const row = $('#job-row');
+  row.hidden = jobs.length < 2;
+  if (jobs.length >= 2) {
+    const sel = $('#sel-job');
+    sel.replaceChildren(...jobs.map((j, i) => new Option(`${i + 1}/${jobs.length} · ${j.label}`, String(i + 1))));
+    sel.value = String(r ? r.job : Math.min(state.project.part.job || 1, jobs.length));
+  }
+  const notes = (r && r.notes) || [];
+  const fuselage = partType() === 'fuselage';
+  const current = r ? r.job : Number($('#sel-job').value || 1);
+  $('#steps-card').hidden = !(notes.length || fuselage);
+  $('#steps-pill').textContent = jobs.length > 1 ? `cut ${current} of ${jobs.length}` : '';
+  $('#job-notes').replaceChildren(...notes.map((n) => el('li', {}, n)));
+  $('#btn-export-all').hidden = jobs.length < 2;
+  $('#btn-plans').hidden = !fuselage;
+}
+
+async function exportAllCuts() {
+  const jobs = state.result?.jobs || [];
+  try {
+    for (let i = 0; i < jobs.length; i++) {
+      const project = clone(state.project);
+      project.part.job = i + 1;
+      const r = await api('/api/slice', { project });
+      download(`${slug(projectName())}-${i + 1}-${slug(jobs[i].label)}.gcode`, r.gcode);
+      await new Promise((ok) => setTimeout(ok, 250));
+    }
+  } catch (err) {
+    alert(err.message);
+  }
 }
 
 // Preview scrubber -------------------------------------------------------------------
@@ -871,7 +964,10 @@ function wire() {
   $('#btn-play').addEventListener('click', togglePlay);
 
   $('#btn-export').addEventListener('click', () => {
-    if (state.result) download(`${slug(state.project.title)}.gcode`, state.result.gcode);
+    const r = state.result;
+    if (!r) return;
+    const suffix = (r.jobs || []).length > 1 ? `-${r.job}-${slug(r.jobs[r.job - 1].label)}` : '';
+    download(`${slug(projectName())}${suffix}.gcode`, r.gcode);
   });
   $('#btn-send').addEventListener('click', () => { setTab('device'); startCurrentJob(); });
 
@@ -879,7 +975,7 @@ function wire() {
     if (confirm('Start a new project? Unsaved changes are lost.')) setProject(clone(state.info.default_project));
   });
   $('#btn-save').addEventListener('click', () => {
-    download(`${slug(state.project.title)}.howi.json`, JSON.stringify(state.project, null, 2), 'application/json');
+    download(`${slug(projectName())}.howi.json`, JSON.stringify(state.project, null, 2), 'application/json');
   });
   $('#btn-open').addEventListener('click', () => $('#file-project').click());
   $('#file-project').addEventListener('change', async (e) => {
@@ -895,6 +991,19 @@ function wire() {
     } catch (err) { alert(`Could not open ${file.name}: ${err.message}`); }
   });
   $('#btn-kerf').addEventListener('click', kerfTest);
+  $('#sel-job').addEventListener('change', () => {
+    state.project.part.job = Number($('#sel-job').value);
+    changed();
+  });
+  $('#btn-export-all').addEventListener('click', exportAllCuts);
+  $('#btn-plans').addEventListener('click', async () => {
+    try {
+      const r = await api('/api/template/fuselage', { project: state.project });
+      download(r.filename.replace(/[^\w.-]+/g, '-'), r.svg, 'image/svg+xml');
+    } catch (err) {
+      alert(err.message);
+    }
+  });
   $('#btn-bays').addEventListener('click', async () => {
     try {
       const r = await api('/api/template/bays', { project: state.project });

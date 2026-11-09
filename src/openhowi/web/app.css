@@ -139,6 +139,7 @@ input.invalid { border-color: var(--danger); }
 .sw.xy { background: var(--xy); } .sw.uv { background: var(--uv); } .sw.wire { background: var(--wire); }
 .sw.part { background: var(--part); height: 9px; }
 .sw.bay { background: var(--bay); height: 9px; }
+.sw.ghost { background: var(--part); height: 9px; outline: 1px solid var(--muted); }
 .banner {
   position: absolute; left: 12px; right: 12px; bottom: 70px; margin: 0 auto; max-width: 720px;
   padding: 9px 12px; border-radius: var(--radius); background: var(--err-bg); color: var(--err-ink);
@@ -307,3 +308,17 @@ dialog.wide { width: min(720px, calc(100vw - 32px)); }
 .foil .note { font-size: 12px; }
 .foil .tag { font-size: 11px; padding: 0 6px; border-radius: 999px; background: var(--warn-bg); color: var(--warn-ink); }
 .foil-empty { grid-column: 1 / -1; color: var(--muted); text-align: center; padding: 20px; }
+
+/* Fuselages: stations table, cut selector, cutting steps ----------------------------------- */
+.table-field { display: flex; flex-direction: column; gap: 3px; }
+.table-row { display: grid; grid-template-columns: repeat(var(--cols), minmax(0, 1fr)) 22px; gap: 3px; align-items: center; }
+.table-row.head span { font-size: 11px; color: var(--muted); text-align: center; line-height: 1.15; }
+.table-row.head small { display: block; font-size: 10px; }
+.table-row input { width: 100%; min-width: 0; padding: 3px 4px; font-size: 12px; text-align: right; }
+.table-row button { padding: 0; min-width: 0; color: var(--muted); }
+.table-row button:hover:not(:disabled) { color: var(--danger); }
+.table-field + .hint { margin-bottom: 4px; }
+.job-row { display: flex; align-items: center; gap: 8px; }
+.job-row label { font-size: 12.5px; color: var(--muted); }
+.job-row select { flex: 1; min-width: 0; }
+.steps { margin: 0 0 10px; padding-left: 20px; display: flex; flex-direction: column; gap: 6px; font-size: 12.5px; }

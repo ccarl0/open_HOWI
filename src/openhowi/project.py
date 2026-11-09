@@ -16,8 +16,10 @@ from . import airfoildb
 from .airfoil import NACA_SPEC, Airfoil, AirfoilError, load_airfoil, parse_dat
 from .core import Channel, CoreSpec, Joiner, ServoBay, Spar
 from .drawing import ShapeError
+from .fusecut import CutOptions, build_job, job_labels
+from .fuselage import Fuselage, Saddle, Station
 from .gcode import generate_gcode, segments
-from .geometry import Point, bounds, polyline_length
+from .geometry import Point, bounds, polyline_length, signed_area
 from .machine import Machine
 from .material import Material
 from .presets import BUILTIN, PresetError, machine_from_values, material_from_values
@@ -192,9 +194,90 @@ SHAPE_PLACEMENT_FIELDS: list[dict[str, Any]] = [
      "help": "Machine Y of the bottom of the shape."},
 ]  # fmt: skip
 
-PART_TYPES = [{"type": "wing", "label": "Wing panel"}, {"type": "shape", "label": "2D shape (DXF/SVG)"}]
-PART_SCHEMAS = {"wing": PART_FIELDS, "shape": SHAPE_FIELDS}
-PLACEMENT_SCHEMAS = {"wing": PLACEMENT_FIELDS, "shape": SHAPE_PLACEMENT_FIELDS}
+STATION_COLUMNS: list[dict[str, Any]] = [
+    {"key": "x", "label": "x", "unit": "mm", "help": "Distance from the nose"},
+    {"key": "top", "label": "Top", "unit": "mm", "help": "Height of the top line above the datum"},
+    {"key": "bottom", "label": "Bottom", "unit": "mm", "help": "Height of the bottom line (below the datum: negative)"},
+    {"key": "width", "label": "Width", "unit": "mm", "min": 0, "help": "Full width"},
+    {"key": "round_top", "label": "Rnd ↑", "unit": "%", "min": 0, "max": 100,
+     "help": "Upper half of the section: 100 % elliptical, 0 % square corners"},
+    {"key": "round_bottom", "label": "Rnd ↓", "unit": "%", "min": 0, "max": 100,
+     "help": "Lower half of the section: 100 % elliptical, 0 % flat bottom with square corners"},
+]  # fmt: skip
+
+SADDLE_FIELDS: list[dict[str, Any]] = [
+    {"key": "airfoil", "label": "Wing airfoil", "type": "airfoil"},
+    {"key": "position", "label": "Leading edge", "unit": "mm", "type": "number", "min": 0,
+     "help": "Distance of the wing's leading edge from the nose."},
+    {"key": "chord", "label": "Chord", "unit": "mm", "type": "number", "min": 1},
+    {"key": "height", "label": "LE height", "unit": "mm", "type": "number", "step": 0.5,
+     "help": "Height of the wing's leading edge above the datum."},
+    {"key": "incidence", "label": "Incidence", "unit": "°", "type": "number", "step": 0.25,
+     "help": "Wing incidence, nose up."},
+    {"key": "side", "label": "Wing", "type": "select",
+     "options": [["top", "on top (high wing)"], ["bottom", "underneath (low wing)"]]},
+]  # fmt: skip
+
+FUSELAGE_FIELDS: list[dict[str, Any]] = [
+    {"key": "source", "label": "Shape from", "type": "select", "group": "Shape",
+     "options": [["stations", "stations"], ["views", "side and top view drawings"]]},
+    {"key": "stations", "label": "Stations", "type": "table", "group": "Shape", "columns": STATION_COLUMNS,
+     "show_if": {"source": "stations"}, "min_rows": 2, "max": 40, "add_label": "Add station",
+     "help": "Sizes along the fuselage. Between stations the lines run smoothly. Heights are from a datum "
+             "line of your choice, e.g. the thrust line."},
+    {"key": "side_view", "label": "Side view", "type": "drawing", "group": "Shape", "show_if": {"source": "views"},
+     "help": "One closed outline: nose on the left, top up."},
+    {"key": "top_view", "label": "Top view", "type": "drawing", "group": "Shape", "show_if": {"source": "views"},
+     "help": "One closed outline: nose on the left, drawn at the same scale as the side view."},
+    {"key": "round_top", "label": "Roundness, top", "unit": "%", "type": "number", "min": 0, "max": 100, "step": 5,
+     "group": "Shape", "show_if": {"source": "views"}, "help": "100 %: elliptical sections; 0 %: square corners."},
+    {"key": "round_bottom", "label": "Roundness, bottom", "unit": "%", "type": "number", "min": 0, "max": 100,
+     "step": 5, "group": "Shape", "show_if": {"source": "views"}},
+    {"key": "saddles", "label": "Wing saddles", "type": "list", "group": "Wing saddle", "item_label": "Saddle",
+     "add_label": "Add wing saddle", "max": 3, "item_fields": SADDLE_FIELDS,
+     "empty": "No wing saddle. A saddle shapes the top (or bottom) line to the wing's airfoil.",
+     "default_item": {"airfoil": "naca2412", "position": 120.0, "chord": 200.0, "height": 45.0, "incidence": 0.0,
+                      "side": "top"}},
+    {"key": "method", "label": "Cut as", "type": "select", "group": "Cut",
+     "options": [["two_view", "two views: side, then top"], ["segments", "lengthwise segments (rounded)"]],
+     "help": "Two views: two passes, then round the corners by hand. Segments: the wire runs along the "
+             "fuselage and cuts rounded sections; glue the segments together."},
+    {"key": "segment_length", "label": "Longest segment", "unit": "mm", "type": "number", "min": 10,
+     "group": "Cut", "show_if": {"method": "segments"}},
+    {"key": "halves", "label": "Left and right halves", "type": "bool", "group": "Cut",
+     "show_if": {"method": "segments"},
+     "help": "Cut every segment as two half shells, glued along the centre line: hollow halves need no slit."},
+    {"key": "wall", "label": "Hollow: wall", "unit": "mm", "type": "number", "min": 0, "step": 0.5, "group": "Cut",
+     "show_if": {"method": "segments"}, "help": "0: solid. A hollow full segment is reached through a slit."},
+    {"key": "spare", "label": "Spare foam", "unit": "mm", "type": "number", "min": 1, "step": 1, "group": "Cut",
+     "help": "Foam left around the fuselage on every side of the block."},
+    {"key": "skin", "label": "Planking / skin", "unit": "mm", "type": "number", "min": 0, "step": 0.1,
+     "group": "Plans", "help": "The formers in the plans are drawn this much inside the fuselage."},
+    {"key": "points", "label": "Points per section", "type": "number", "min": 16, "max": 400, "step": 4,
+     "group": "Advanced", "show_if": {"method": "segments"}, "help": "A multiple of 4."},
+    {"key": "kerf_root_override", "label": "Front kerf override", "unit": "mm", "type": "number", "min": 0,
+     "step": 0.05, "optional": True, "group": "Advanced", "help": "Blank: from the material."},
+    {"key": "kerf_tip_override", "label": "Back kerf override", "unit": "mm", "type": "number", "min": 0,
+     "step": 0.05, "optional": True, "group": "Advanced"},
+]  # fmt: skip
+
+FUSELAGE_PLACEMENT_FIELDS: list[dict[str, Any]] = [
+    {"key": "root_side", "label": "Measure from", "type": "select",
+     "options": [["xy", "the XY carriage"], ["uv", "the UV carriage"]]},
+    {"key": "root_offset", "label": "Distance from that carriage", "unit": "mm", "type": "number", "min": 0},
+    {"key": "x_margin", "label": "Foam rear face X", "unit": "mm", "type": "number", "min": 1,
+     "help": "Machine X of the back of the foam block (the side towards X = 0)."},
+    {"key": "y_offset", "label": "Foam underside Y", "unit": "mm", "type": "number", "min": 0,
+     "help": "Machine Y of the underside of the foam, i.e. of the support it rests on."},
+]  # fmt: skip
+
+PART_TYPES = [
+    {"type": "wing", "label": "Wing panel"},
+    {"type": "shape", "label": "2D shape"},
+    {"type": "fuselage", "label": "Fuselage"},
+]
+PART_SCHEMAS = {"wing": PART_FIELDS, "shape": SHAPE_FIELDS, "fuselage": FUSELAGE_FIELDS}
+PLACEMENT_SCHEMAS = {"wing": PLACEMENT_FIELDS, "shape": SHAPE_PLACEMENT_FIELDS, "fuselage": FUSELAGE_PLACEMENT_FIELDS}
 DEFAULT_PARTS: dict[str, dict[str, Any]] = {
     "wing": {
         "type": "wing",
@@ -235,9 +318,40 @@ DEFAULT_PARTS: dict[str, dict[str, Any]] = {
         "kerf_tip_override": None,
     },
 }
+DEFAULT_PARTS["fuselage"] = {
+    "type": "fuselage",
+    "source": "stations",
+    "stations": [
+        {"x": x, "top": t, "bottom": b, "width": w, "round_top": rt, "round_bottom": rb}
+        for x, t, b, w, rt, rb in (
+            (0.0, 22.0, -22.0, 44.0, 100.0, 100.0),
+            (30.0, 34.0, -30.0, 58.0, 100.0, 90.0),
+            (120.0, 48.0, -38.0, 72.0, 80.0, 50.0),
+            (250.0, 44.0, -34.0, 64.0, 80.0, 50.0),
+            (400.0, 30.0, -10.0, 34.0, 70.0, 60.0),
+            (500.0, 22.0, 6.0, 16.0, 60.0, 60.0),
+        )
+    ],
+    "side_view": None,
+    "top_view": None,
+    "round_top": 100.0,
+    "round_bottom": 100.0,
+    "saddles": [],
+    "method": "two_view",
+    "segment_length": 150.0,
+    "halves": False,
+    "wall": 0.0,
+    "spare": 5.0,
+    "skin": 0.0,
+    "points": 64,
+    "job": 1,
+    "kerf_root_override": None,
+    "kerf_tip_override": None,
+}
 DEFAULT_PLACEMENTS: dict[str, dict[str, Any]] = {
     "wing": {"root_side": "xy", "root_offset": 200.0, "x_margin": 25.0, "y_offset": 40.0},
     "shape": {"root_side": "xy", "root_offset": 300.0, "x_margin": 20.0, "y_offset": 20.0},
+    "fuselage": {"root_side": "xy", "root_offset": 30.0, "x_margin": 20.0, "y_offset": 10.0},
 }
 
 
@@ -282,6 +396,7 @@ class SliceResult:
     """JSON-ready summary for the GUI."""
     wing: WingPanel | None = None
     """The wing panel, for wing projects."""
+    fuselage: Fuselage | None = None
 
 
 @dataclass
@@ -303,6 +418,18 @@ class _Part:
     bays: list[tuple[float, float, list[Point], list[Point]]] = field(default_factory=list)
     """Hand-cut pockets to show: span positions of both ends and their sections there."""
     wing: WingPanel | None = None
+    fuselage: Fuselage | None = None
+    jobs: list[str] = field(default_factory=list)
+    """Labels of the separate cuts a part needs (e.g. two passes); ``job`` is the one sliced (1-based)."""
+    job: int = 1
+    notes: list[str] = field(default_factory=list)
+    """Step-by-step instructions for this cut."""
+    views: list[dict[str, Any]] = field(default_factory=list)
+    """2D views to show as thumbnails: {"label", "rings"}."""
+    ghosts: list[list[list[tuple[float, float, float]]]] = field(default_factory=list)
+    """Finished shapes to show faintly in 3D, as rings to loft."""
+    block: dict[str, float] | None = None
+    """The foam block, when the part type knows it better than the outline's bounds."""
 
 
 def _r(v: float) -> float:
@@ -367,7 +494,8 @@ def _slice(project: dict[str, Any]) -> SliceResult:
     machine = machine_from_values(machine_values, material)
     placement = _placement(project)
 
-    built = (_wing_part if kind == "wing" else _shape_part)(part, machine, material, placement)
+    build = {"wing": _wing_part, "shape": _shape_part, "fuselage": _fuselage_part}[kind]
+    built = build(part, machine, material, placement)
     return _finish(project, kind, machine, material, placement, built)
 
 
@@ -687,7 +815,7 @@ def _finish(
     toolpath = built.toolpath
     kerf_root, kerf_tip = built.kerf
     ratio_root, ratio_tip = built.ratio
-    title = str(project.get("title") or ("Wing panel" if kind == "wing" else "2D shape"))
+    title = str(project.get("title") or {"wing": "Wing panel", "shape": "2D shape", "fuselage": "Fuselage"}[kind])
     gcode = generate_gcode(
         toolpath,
         machine,
@@ -726,9 +854,12 @@ def _finish(
         "z0": _r(min(built.z_root, built.z_tip)),
         "z1": _r(max(built.z_root, built.z_tip)),
     }
+    if built.block is not None:
+        block = {k: _r(v) for k, v in built.block.items()}
 
     warnings = list(built.warnings)
-    slow_end, slow_ratio = ("tip", ratio_tip) if ratio_tip < ratio_root else ("root", ratio_root)
+    root_name, tip_name = ("larger", "smaller") if kind == "fuselage" else ("root", "tip")
+    slow_end, slow_ratio = (tip_name, ratio_tip) if ratio_tip < ratio_root else (root_name, ratio_root)
     if slow_ratio < SLOW_END_WARNING:
         warnings.append(
             f"The {slow_end} end moves at only {slow_ratio:.0%} of the cut speed, so it will melt a wide, rough "
@@ -776,11 +907,16 @@ def _finish(
                 }
                 for z0, z1, a, b in built.bays
             ],
+            "ghosts": [[[[_r(c) for c in p] for p in ring] for ring in ghost] for ghost in built.ghosts],
         },
+        "jobs": [{"label": label} for label in built.jobs],
+        "job": built.job,
+        "notes": built.notes,
+        "views": [{"label": v["label"], "rings": [_pts(r) for r in v["rings"]]} for v in built.views],
         "block": block,
         "path": {"t": times, "xy": xy_pts, "uv": uv_pts, "cut": cut},
     }
-    return SliceResult(machine, material, toolpath, gcode, data, built.wing)
+    return SliceResult(machine, material, toolpath, gcode, data, built.wing, built.fuselage)
 
 
 def bay_template(project: dict[str, Any]) -> tuple[str, str]:
@@ -792,3 +928,179 @@ def bay_template(project: dict[str, Any]) -> tuple[str, str]:
         raise SliceError("this part has no servo bays")
     title = str(project.get("title") or "Wing panel")
     return f"{title}-servo-bays.svg", bay_template_svg(result.wing, title)
+
+
+# Fuselages ------------------------------------------------------------------------------------------
+
+
+def _view_outline(part: dict[str, Any], key: str, label: str, warnings: list[str]) -> list[Point]:
+    source = part.get(key)
+    if not isinstance(source, dict) or not all(isinstance(source.get(k), str) for k in ("name", "format", "data")):
+        raise SliceError(f"load the {label} (an SVG or DXF drawing with one closed outline)")
+    if source["format"] not in FORMATS:
+        raise SliceError(f"unsupported drawing format {source['format']!r}")
+    try:
+        regions, _, _ = drawing_regions(source["format"], source["data"], 0.05, 0.2)
+    except ShapeError as exc:
+        raise SliceError(f"{label}: {exc}") from exc
+    outline = max((r.outer for r in regions), key=lambda ring: abs(signed_area(ring)))
+    if len(regions) > 1:
+        warnings.append(f"The {label} has {len(regions)} outlines: only the largest is used.")
+    return outline
+
+
+def build_fuselage(part: dict[str, Any]) -> tuple[Fuselage, list[str]]:
+    """The fuselage described by a project's part (stations or drawings, with wing saddles)."""
+    warnings: list[str] = []
+    raw = part.get("saddles") or []
+    if not isinstance(raw, list):
+        raise SliceError("wing saddles must be a list")
+    saddles = []
+    for number, item in enumerate(raw, start=1):
+        if not isinstance(item, dict):
+            raise SliceError(f"wing saddle {number} must be an object")
+        values = {k: v for k, v in item.items() if k in ("position", "chord", "height", "incidence", "side")}
+        for key, value in values.items():
+            if key != "side" and (isinstance(value, bool) or not isinstance(value, (int, float))):
+                raise SliceError(f"wing saddle {number}: {key} must be a number")
+        try:
+            saddles.append(Saddle(resolve_airfoil(item.get("airfoil") or "naca2412"), **values))
+        except (TypeError, ValueError) as exc:
+            raise SliceError(f"wing saddle {number}: {exc}") from exc
+    source = part.get("source", "stations")
+    try:
+        if source == "stations":
+            stations = _items(part.get("stations") or [], Station, "station")
+            if len(stations) < 2:
+                raise SliceError("a fuselage needs at least two stations")
+            return Fuselage.from_stations(stations, saddles), warnings
+        if source == "views":
+            side = _view_outline(part, "side_view", "side view", warnings)
+            top = _view_outline(part, "top_view", "top view", warnings)
+            rt = _number(part, "round_top", 100.0)
+            rb = _number(part, "round_bottom", 100.0)
+            fuse, more = Fuselage.from_views(side, top, 100.0 if rt is None else rt, 100.0 if rb is None else rb,
+                                             saddles)  # fmt: skip
+            return fuse, warnings + more
+    except SliceError:
+        raise
+    except ValueError as exc:
+        raise SliceError(str(exc)) from exc
+    raise SliceError(f"unknown fuselage source {source!r}")
+
+
+def _decimate(points: list[Point], limit: int = 240) -> list[Point]:
+    step = max(1, len(points) // limit)
+    return points[::step]
+
+
+def _fuselage_part(part: dict[str, Any], machine: Machine, material: Material, placement: Placement) -> _Part:
+    fuse, warnings = build_fuselage(part)
+    halves = part.get("halves", False)
+    if not isinstance(halves, bool):
+        raise SliceError("halves must be true or false")
+    try:
+        options = CutOptions(
+            method=str(part.get("method", "two_view")),
+            segment_length=_number(part, "segment_length", 150.0) or 150.0,
+            halves=halves,
+            wall=_number(part, "wall", 0.0) or 0.0,
+            spare=_number(part, "spare", 5.0) or 5.0,
+            points=int(_number(part, "points", 64) or 64),
+        )
+        labels = job_labels(fuse, options)
+        job = min(max(int(_number(part, "job", 1) or 1), 1), len(labels))
+        cut = build_job(fuse, options, job - 1, machine, placement, lambda ratio: _kerfs(part, material, ratio))
+    except PlacementError:
+        raise
+    except (TypeError, ValueError) as exc:
+        raise SliceError(str(exc)) from exc
+
+    lo, hi = fuse.height_range()
+    width = fuse.max_width()
+    n_vol = 100
+    volume = sum(abs(signed_area(fuse.section(fuse.length * (k + 0.5) / n_vol, 32))) for k in range(n_vol))
+    volume *= fuse.length / n_vol
+    widest = max(fuse.sample_xs(fuse.length / 60), key=lambda x: fuse.width(x) * (fuse.top(x) - fuse.bottom(x)))
+    views: list[dict[str, Any]] = [
+        {"label": "Side", "rings": [_decimate(fuse.side_outline())]},
+        {"label": "Top", "rings": [_decimate(fuse.plan_outline())]},
+    ]
+    if options.method == "segments":
+        xa, xb = fuse.segments(options.segment_length)[(job - 1) // (2 if options.halves else 1)]
+        for name, x in (("Front", xa), ("Back", xb)):
+            ring = fuse.section(x, 64, minimum=2.0)
+            try:
+                inner = fuse.section(x, 64, inset=options.wall, minimum=2.0) if options.wall > 0 else None
+            except ValueError:
+                inner = None
+            if options.halves:
+                from .fuselage import half_ring
+
+                rings = [half_ring(ring, inner)]
+            else:
+                rings = [ring] + ([inner] if inner else [])
+            views.append({"label": f"{name} · {x:.0f} mm", "rings": rings})
+    else:
+        views.append({"label": f"Section · {widest:.0f} mm", "rings": [fuse.section(widest, 64)]})
+    method = "two views" if options.method == "two_view" else "lengthwise segments"
+    return _Part(
+        toolpath=cut.toolpath,
+        z_root=cut.z_root,
+        z_tip=cut.z_tip,
+        root_regions=cut.root_regions,
+        tip_regions=cut.tip_regions,
+        kerf=cut.kerf,
+        ratio=cut.ratio,
+        comments=[
+            f"fuselage {fuse.length:.0f} mm long, {width:.0f} mm wide, {hi - lo:.0f} mm high, cut as {method}",
+            f"cut {job} of {len(labels)}: {cut.label}",
+        ],
+        warnings=warnings
+        + cut.warnings
+        + (
+            [
+                (
+                    "Wing saddles are not cut by lengthwise segments: shape them by hand, using the side view in the "
+                    "plans (Preview → Plans & formers) as a template."
+                )
+            ]
+            if fuse.saddles and options.method == "segments"
+            else []
+        ),
+        stats={
+            "fuselage": {
+                "length": round(fuse.length, 1),
+                "width": round(width, 1),
+                "height": round(hi - lo, 1),
+                "volume_l": round(volume / 1e6, 2),
+                "method": options.method,
+                "cut": cut.label,
+            }
+        },
+        fuselage=fuse,
+        jobs=labels,
+        job=job,
+        notes=cut.notes,
+        views=views,
+        ghosts=[cut.ghost] if cut.ghost else [],
+        block=cut.block,
+    )
+
+
+def fuselage_plans(project: dict[str, Any]) -> tuple[str, str]:
+    """File name and SVG of the 1:1 fuselage plans: side and top views and the formers."""
+    from .template import fuselage_plans_svg
+
+    part = project.get("part") or {}
+    if not isinstance(part, dict) or part.get("type") != "fuselage":
+        raise SliceError("the plans are for fuselages")
+    fuse, _ = build_fuselage(part)
+    title = str(project.get("title") or "Fuselage")
+    skin = _number(part, "skin", 0.0) or 0.0
+    spacing = _number(part, "segment_length", 150.0) or 150.0
+    try:
+        svg = fuselage_plans_svg(fuse, title, skin=skin, spacing=spacing)
+    except ValueError as exc:
+        raise SliceError(str(exc)) from exc
+    return f"{title}-plans.svg", svg

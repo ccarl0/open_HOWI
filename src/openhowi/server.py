@@ -44,6 +44,7 @@ from .project import (
     SliceError,
     bay_template,
     default_project,
+    fuselage_plans,
     inspect_drawing,
     resolve_airfoil,
     slice_project,
@@ -84,6 +85,7 @@ class App:
             ("POST", "/api/shapes/inspect"): self.inspect_shape,
             ("POST", "/api/slice"): self.slice,
             ("POST", "/api/template/bays"): self.bays_template,
+            ("POST", "/api/template/fuselage"): self.fuselage_template,
             ("POST", "/api/calibration/kerf"): self.kerf_test,
             ("GET", "/api/device/ports"): lambda q: {"ports": list_ports()},
             ("GET", "/api/device/state"): self.device_state,
@@ -172,6 +174,10 @@ class App:
 
     def bays_template(self, body: dict[str, Any]) -> dict[str, Any]:
         name, svg = bay_template(body.get("project") or {})
+        return {"filename": name, "svg": svg}
+
+    def fuselage_template(self, body: dict[str, Any]) -> dict[str, Any]:
+        name, svg = fuselage_plans(body.get("project") or {})
         return {"filename": name, "svg": svg}
 
     def slice(self, body: dict[str, Any]) -> dict[str, Any]:

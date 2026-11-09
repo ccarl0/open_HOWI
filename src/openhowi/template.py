@@ -10,9 +10,11 @@ check the print scale.
 
 from __future__ import annotations
 
+import math
 from html import escape
 
 from . import __version__
+from .fuselage import Fuselage
 from .geometry import Point
 from .wing import BayGeometry, WingPanel
 
@@ -189,3 +191,180 @@ def _bay(bay: BayGeometry, to_svg) -> list[str]:  # type: ignore[no-untyped-def]
         f"{_fmt(bay.x0 - bay.core_le)}</text>"
     )
     return out
+
+
+# Fuselage plans ---------------------------------------------------------------------------------------
+
+
+def _clip(ring: list[Point], limit: float, keep_below: bool) -> list[Point]:
+    """The part of a closed outline below (or above) a horizontal line."""
+
+    def inside(p: Point) -> bool:
+        return p[1] <= limit if keep_below else p[1] >= limit
+
+    out: list[Point] = []
+    for a, b in zip(ring, ring[1:] + ring[:1]):
+        if inside(a):
+            out.append(a)
+        if inside(a) != inside(b):
+            t = (limit - a[1]) / (b[1] - a[1])
+            out.append((a[0] + (b[0] - a[0]) * t, limit))
+    return out
+
+
+def fuselage_plans_svg(fuse: Fuselage, title: str = "Fuselage", skin: float = 0.0, spacing: float = 150.0) -> str:
+    """Side view, top view and formers at 1:1, in millimetres; print at 100 %."""
+    gap = 12.0
+    length = fuse.length
+    width = max(length + 2 * MARGIN + 40.0, 190.0)
+    parts: list[str] = []
+    y = MARGIN
+    parts.append(f'<text x="{MARGIN}" y="{y + 5}" font-size="6" font-weight="bold">{escape(title)}: plans</text>')
+    y += 11
+    for line in (
+        "Print at 100 % (actual size, no “fit to page”); tile long fuselages over several sheets.",
+        "Check the 50 mm bar after printing. Heights are from the datum line; distances in mm from the nose.",
+    ):
+        parts.append(f'<text x="{MARGIN}" y="{_fmt(y)}" font-size="{FONT}">{escape(line)}</text>')
+        y += FONT * 1.5
+
+    formers = [x for x in fuse.former_positions(spacing) if fuse.width(x) >= 3 and fuse.top(x) - fuse.bottom(x) >= 3]
+    left = MARGIN + 10.0
+
+    def path(points: list[Point], close: bool = True) -> str:
+        d = " ".join(f"{'L' if i else 'M'}{_fmt(px)},{_fmt(py)}" for i, (px, py) in enumerate(points))
+        return d + (" Z" if close else "")
+
+    # Side view
+    lo, hi = fuse.height_range()
+    y += 8
+    parts.append(f'<text x="{MARGIN}" y="{_fmt(y)}" font-size="{FONT * 1.2}" font-weight="bold">Side view</text>')
+    base = y + 6 + hi  # svg y of the datum
+
+    def side(p: Point) -> Point:
+        return (left + p[0], base - p[1])
+
+    parts.append(
+        f'<path d="{path([side(p) for p in fuse.side_outline()])}" fill="none" stroke="#000" stroke-width="0.4"/>'
+    )
+    for saddle in fuse.saddles:
+        foil = saddle.airfoil.normalized()
+        phi = math.radians(-saddle.incidence)
+        c, s = math.cos(phi), math.sin(phi)
+        wing = [
+            side((saddle.position + (fx * c - fy * s) * saddle.chord, saddle.height + (fx * s + fy * c) * saddle.chord))
+            for fx, fy in foil.points
+        ]
+        parts.append(
+            f'<path d="{path(wing)}" fill="none" stroke="#1c7ed6" stroke-width="0.25" stroke-dasharray="1.5 1"/>'
+        )
+        wx, wy = side((saddle.position + saddle.chord / 2, saddle.height))
+        parts.append(
+            f'<text x="{_fmt(wx)}" y="{_fmt(wy - 2)}" font-size="2.5" fill="#1c7ed6" text-anchor="middle">wing</text>'
+        )
+    if lo < 0 < hi:
+        (dx0, dy0), (dx1, _) = side((-5, 0)), side((length + 5, 0))
+        parts.append(
+            f'<path d="M{_fmt(dx0)},{_fmt(dy0)} H{_fmt(dx1)}" stroke="#888" stroke-width="0.2" stroke-dasharray="4 1 1 1"/>'
+        )
+        parts.append(f'<text x="{_fmt(dx1 + 1)}" y="{_fmt(dy0 + 1)}" font-size="2.5" fill="#888">datum</text>')
+    for k, x in enumerate(formers, start=1):
+        (sx, sy0), (_, sy1) = side((x, fuse.top(x) + 3)), side((x, fuse.bottom(x) - 3))
+        parts.append(f'<path d="M{_fmt(sx)},{_fmt(sy0)} V{_fmt(sy1)}" stroke="#c0392b" stroke-width="0.2"/>')
+        parts.append(
+            f'<text x="{_fmt(sx)}" y="{_fmt(sy0 - 1)}" font-size="2.5" fill="#c0392b" text-anchor="middle">F{k}</text>'
+        )
+    y = base - lo + 8
+
+    # Top view
+    half = fuse.max_width() / 2
+    parts.append(f'<text x="{MARGIN}" y="{_fmt(y)}" font-size="{FONT * 1.2}" font-weight="bold">Top view</text>')
+    mid = y + 6 + half
+
+    def plan(p: Point) -> Point:
+        return (left + p[0], mid - p[1])
+
+    parts.append(
+        f'<path d="{path([plan(p) for p in fuse.plan_outline()])}" fill="none" stroke="#000" stroke-width="0.4"/>'
+    )
+    (cx0, cy), (cx1, _) = plan((-5, 0)), plan((length + 5, 0))
+    parts.append(
+        f'<path d="M{_fmt(cx0)},{_fmt(cy)} H{_fmt(cx1)}" stroke="#888" stroke-width="0.2" stroke-dasharray="4 1 1 1"/>'
+    )
+    for k, x in enumerate(formers, start=1):
+        w = fuse.width(x) / 2 + 3
+        (sx, sy0), (_, sy1) = plan((x, w)), plan((x, -w))
+        parts.append(f'<path d="M{_fmt(sx)},{_fmt(sy0)} V{_fmt(sy1)}" stroke="#c0392b" stroke-width="0.2"/>')
+        parts.append(
+            f'<text x="{_fmt(sx)}" y="{_fmt(sy0 - 1)}" font-size="2.5" fill="#c0392b" text-anchor="middle">F{k}</text>'
+        )
+    y = mid + half + 10
+
+    # Formers
+    if formers:
+        label = "Formers" + (f", {_fmt(skin)} mm inside the skin (dashed)" if skin > 0 else "")
+        parts.append(
+            f'<text x="{MARGIN}" y="{_fmt(y)}" font-size="{FONT * 1.2}" font-weight="bold">{escape(label)}</text>'
+        )
+        y += 6
+        cursor, row_height = MARGIN, 0.0
+        for k, x in enumerate(formers, start=1):
+            outer = fuse.section(x, 96)
+            try:
+                inner = fuse.section(x, 96, inset=skin) if skin > 0 else outer
+            except ValueError:
+                inner = outer
+            for saddle in fuse.saddles:  # a former under the wing stops at the saddle
+                limit = fuse.top(x) if saddle.side == "top" else fuse.bottom(x)
+                line = saddle.line()
+                if line[0][0] <= x <= line[-1][0]:
+                    inner = _clip(inner, limit - (skin if saddle.side == "top" else -skin), saddle.side == "top")
+            us = [u for u, _ in outer]
+            vs = [v for _, v in outer]
+            w, h = max(us) - min(us), max(vs) - min(vs)
+            if cursor + w > width - MARGIN and cursor > MARGIN:
+                cursor, y = MARGIN, y + row_height + 14
+                row_height = 0.0
+            ox, oy = cursor - min(us), y + max(vs)
+
+            def at(p: Point, ox: float = ox, oy: float = oy) -> Point:
+                return (ox + p[0], oy - p[1])
+
+            if skin > 0:
+                parts.append(
+                    f'<path d="{path([at(p) for p in outer])}" fill="none" stroke="#888" stroke-width="0.25" '
+                    'stroke-dasharray="1.5 1"/>'
+                )
+            parts.append(f'<path d="{path([at(p) for p in inner])}" fill="none" stroke="#000" stroke-width="0.4"/>')
+            (vx, vy0), (_, vy1) = at((0, max(vs) + 2)), at((0, min(vs) - 2))
+            parts.append(
+                f'<path d="M{_fmt(vx)},{_fmt(vy0)} V{_fmt(vy1)}" stroke="#888" stroke-width="0.2" stroke-dasharray="2 1"/>'
+            )
+            if min(vs) < 0 < max(vs):
+                (hx0, hy), (hx1, _) = at((min(us) - 2, 0)), at((max(us) + 2, 0))
+                parts.append(
+                    f'<path d="M{_fmt(hx0)},{_fmt(hy)} H{_fmt(hx1)}" stroke="#888" stroke-width="0.2" stroke-dasharray="2 1"/>'
+                )
+            parts.append(
+                f'<text x="{_fmt(cursor + w / 2)}" y="{_fmt(y + h + 5)}" font-size="2.8" text-anchor="middle">'
+                f"F{k} · {x:.0f} mm · {w:.0f} × {h:.0f}</text>"
+            )
+            cursor += max(w, 30.0) + gap
+            row_height = max(row_height, h)
+        y += row_height + 12
+
+    y += 4
+    parts.append(
+        f'<path d="M{MARGIN},{_fmt(y)} v-2 M{MARGIN},{_fmt(y)} h50 v-2 M{MARGIN + 10},{_fmt(y)} v-1 '
+        f'M{MARGIN + 20},{_fmt(y)} v-1 M{MARGIN + 30},{_fmt(y)} v-1 M{MARGIN + 40},{_fmt(y)} v-1" '
+        'fill="none" stroke="#000" stroke-width="0.4"/>'
+    )
+    parts.append(f'<text x="{MARGIN + 53}" y="{_fmt(y)}" font-size="{FONT}">50 mm</text>')
+    y += 8
+    parts.append(f'<text x="{MARGIN}" y="{_fmt(y)}" font-size="2.5" fill="#777">open_HOWI {__version__}</text>')
+    height = y + MARGIN / 2
+    return (
+        f'<svg xmlns="http://www.w3.org/2000/svg" width="{_fmt(width)}mm" height="{_fmt(height)}mm" '
+        f'viewBox="0 0 {_fmt(width)} {_fmt(height)}" font-family="Helvetica, Arial, sans-serif">\n'
+        f'<rect width="100%" height="100%" fill="#fff"/>\n' + "\n".join(parts) + "\n</svg>\n"
+    )

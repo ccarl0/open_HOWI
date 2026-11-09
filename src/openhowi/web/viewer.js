@@ -190,8 +190,11 @@ export class Viewer {
       new THREE.LineBasicMaterial({ color: this.colors.block, transparent: true, opacity: 0.7 })));
 
     // Part: each solid is a loft between its root and tip faces (outline and holes), plus end caps
+    // With a finished shape to show inside it (a fuselage pass), the part cut by this job is see-through.
+    const ghosted = (r.part.ghosts || []).length > 0;
     const partMat = new THREE.MeshStandardMaterial({
       color: this.colors.part, roughness: 0.85, side: THREE.DoubleSide, flatShading: r.kind === 'shape',
+      ...(ghosted ? { transparent: true, opacity: 0.28, depthWrite: false } : {}),
     });
     for (const solid of r.part.solids) this.addSolid(solid, r.part.z_root, r.part.z_tip, partMat);
     // Servo bays (cut by hand): the pocket, standing slightly proud of the surface so it shows
@@ -199,6 +202,9 @@ export class Viewer {
       color: this.colors.bay, roughness: 0.7, side: THREE.DoubleSide, transparent: true, opacity: 0.85,
     });
     for (const bay of r.part.bays || []) this.addSolid(bay, bay.z0, bay.z1, bayMat);
+    // The finished shape (e.g. a fuselage after sanding), faint, lofted through its sections
+    const ghostMat = new THREE.MeshStandardMaterial({ color: this.colors.part, roughness: 0.6, side: THREE.DoubleSide });
+    for (const rings of r.part.ghosts || []) this.addLoft(rings, ghostMat);
     // Finished outline (e.g. the sheeted airfoil) around the core, at both faces
     const skinMat = new THREE.LineBasicMaterial({ color: this.colors.frame, transparent: true, opacity: 0.9 });
     for (const skin of r.part.skins || []) {
@@ -222,6 +228,25 @@ export class Viewer {
       this.overlays.push(done);
     }
     this.setProgress(p.t.length - 1, 1);
+  }
+
+  // A surface through rings of 3D points with the same count.
+  addLoft(rings, material) {
+    if (rings.length < 2) return;
+    const m = rings[0].length;
+    const verts = rings.flat(2);
+    const idx = [];
+    for (let k = 0; k + 1 < rings.length; k++) {
+      for (let i = 0; i < m; i++) {
+        const a = k * m + i; const b = k * m + ((i + 1) % m); const c = a + m; const d = b + m;
+        idx.push(a, b, c, b, d, c);
+      }
+    }
+    const geom = new THREE.BufferGeometry();
+    geom.setAttribute('position', new THREE.Float32BufferAttribute(verts, 3));
+    geom.setIndex(idx);
+    geom.computeVertexNormals();
+    this.partGroup.add(new THREE.Mesh(geom, material));
   }
 
   addSolid(solid, zr, zt, material) {
