@@ -255,7 +255,7 @@ async function browseAirfoils(current) {
       const button = el('button', { type: 'button', class: `foil${a.id === current ? ' current' : ''}`, title: a.category },
         thumb(a.outline),
         el('span', { class: 'name' }, el('span', {}, a.name), el('code', {}, a.id)),
-        el('span', { class: 'props' }, props, a.reflex ? el('span', { class: 'tag' }, 'reflexed') : null),
+        el('span', { class: 'props' }, el('span', { class: 'nums' }, props), a.reflex ? el('span', { class: 'tag' }, 'reflexed') : null),
         el('span', { class: 'note' }, a.note));
       button.addEventListener('click', () => { chosen = a.id; dlg.close('pick'); });
       return button;
