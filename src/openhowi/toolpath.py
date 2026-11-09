@@ -86,10 +86,12 @@ class WingLayout:
     """Outline of the finished (sheeted) airfoil at the root, for display."""
     tip_skin: list[Point] = field(default_factory=list)
     cutbacks: dict[str, float] = field(default_factory=dict)
-    root_holes: list[list[Point]] = field(default_factory=list)
-    """Servo channels at the root (finished size), for display."""
-    tip_holes: list[list[Point]] = field(default_factory=list)
     """How far the cores stop short of the airfoil's leading/trailing edges (mm)."""
+    root_holes: list[list[Point]] = field(default_factory=list)
+    """Servo channels and joiner holes at the root (finished size), for display."""
+    tip_holes: list[list[Point]] = field(default_factory=list)
+    bays: list[tuple[float, float, list[Point], list[Point]]] = field(default_factory=list)
+    """Servo bays (cut by hand): span positions of both ends and the pocket's section at each, for display."""
 
 
 def span_positions(span: float, machine: Machine, placement: Placement) -> tuple[float, float]:
@@ -113,8 +115,8 @@ def layout_wing(wing: WingPanel, machine: Machine, placement: Placement) -> Wing
     d = machine.tower_distance
     z_root, z_tip = span_positions(wing.span, machine, placement)
     sections = wing.sections()
-    root_cut = cut_path(sections.root, sections.root_channels, wing.root_kerf)
-    tip_cut = cut_path(sections.tip, sections.tip_channels, wing.tip_kerf)
+    root_cut = cut_path(sections.root, sections.root_holes, wing.root_kerf)
+    tip_cut = cut_path(sections.tip, sections.tip_holes, wing.tip_kerf)
     xy, uv = project_to_towers(root_cut, z_root, tip_cut, z_tip, d)
 
     # Mirror X so the trailing edge faces the origin and the wire enters from behind it.
@@ -124,6 +126,10 @@ def layout_wing(wing: WingPanel, machine: Machine, placement: Placement) -> Wing
         return [(placement.x_margin + (x_back - x), placement.y_offset + y) for x, y in points]
 
     root_skin, tip_skin = wing.skins()
+    bays = []
+    for bay in wing.bay_geometry():
+        z0, z1 = (z_root + (z_tip - z_root) * z / wing.span for z in (bay.z0, bay.z1))
+        bays.append((z0, z1, to_machine(bay.faces[0]), to_machine(bay.faces[1])))
     return WingLayout(
         z_root,
         z_tip,
@@ -134,8 +140,9 @@ def layout_wing(wing: WingPanel, machine: Machine, placement: Placement) -> Wing
         to_machine(root_skin),
         to_machine(tip_skin),
         sections.cutbacks,
-        [to_machine(h) for h in sections.holes(tip=False)],
-        [to_machine(h) for h in sections.holes(tip=True)],
+        [to_machine(h) for h in sections.outlines(tip=False)],
+        [to_machine(h) for h in sections.outlines(tip=True)],
+        bays,
     )
 
 

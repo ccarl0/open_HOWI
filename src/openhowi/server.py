@@ -22,7 +22,7 @@ from pathlib import Path
 from typing import Any
 from urllib.parse import parse_qs, urlparse
 
-from . import __version__
+from . import __version__, airfoildb
 from .airfoil import AirfoilError
 from .calibration import kerf_test
 from .controller import ControllerError, MachineController, list_ports
@@ -42,6 +42,7 @@ from .project import (
     PART_TYPES,
     PLACEMENT_SCHEMAS,
     SliceError,
+    bay_template,
     default_project,
     inspect_drawing,
     resolve_airfoil,
@@ -77,10 +78,12 @@ class App:
             ("POST", "/api/presets/delete"): self.delete_preset,
             ("GET", "/api/airfoils"): self.airfoils,
             ("GET", "/api/airfoils/file"): self.airfoil_file,
+            ("GET", "/api/airfoils/database"): self.airfoil_database,
             ("POST", "/api/airfoils"): self.add_airfoil,
             ("POST", "/api/airfoil/shape"): self.airfoil_shape,
             ("POST", "/api/shapes/inspect"): self.inspect_shape,
             ("POST", "/api/slice"): self.slice,
+            ("POST", "/api/template/bays"): self.bays_template,
             ("POST", "/api/calibration/kerf"): self.kerf_test,
             ("GET", "/api/device/ports"): lambda q: {"ports": list_ports()},
             ("GET", "/api/device/state"): self.device_state,
@@ -143,7 +146,14 @@ class App:
         return self.presets({})
 
     def airfoils(self, _: dict[str, Any]) -> dict[str, Any]:
-        return {"naca": NACA_CODES, "library": self.store.airfoils()}
+        return {
+            "naca": NACA_CODES,
+            "library": self.store.airfoils(),
+            "database": airfoildb.catalog(with_outlines=False),
+        }
+
+    def airfoil_database(self, _: dict[str, Any]) -> dict[str, Any]:
+        return {"categories": list(airfoildb.CATEGORIES), "airfoils": airfoildb.catalog()}
 
     def airfoil_file(self, query: dict[str, Any]) -> dict[str, Any]:
         name = _str(query, "file")
@@ -159,6 +169,10 @@ class App:
 
     def inspect_shape(self, body: dict[str, Any]) -> dict[str, Any]:
         return inspect_drawing(_str(body, "filename"), _str(body, "data"))
+
+    def bays_template(self, body: dict[str, Any]) -> dict[str, Any]:
+        name, svg = bay_template(body.get("project") or {})
+        return {"filename": name, "svg": svg}
 
     def slice(self, body: dict[str, Any]) -> dict[str, Any]:
         result = slice_project(body.get("project") or {})

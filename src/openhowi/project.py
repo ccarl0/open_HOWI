@@ -12,8 +12,9 @@ import dataclasses
 from dataclasses import dataclass, field
 from typing import Any
 
-from .airfoil import Airfoil, AirfoilError, load_airfoil, parse_dat
-from .core import Channel, CoreSpec, Spar
+from . import airfoildb
+from .airfoil import NACA_SPEC, Airfoil, AirfoilError, load_airfoil, parse_dat
+from .core import Channel, CoreSpec, Joiner, ServoBay, Spar
 from .drawing import ShapeError
 from .gcode import generate_gcode, segments
 from .geometry import Point, bounds, polyline_length
@@ -32,7 +33,7 @@ from .shapes import (
     transform_regions,
 )
 from .toolpath import Placement, PlacementError, Toolpath, layout_wing, wing_toolpath
-from .wing import WingPanel
+from .wing import BayGeometry, WingPanel
 
 PROJECT_VERSION = 1
 SLOW_END_WARNING = 0.4
@@ -58,8 +59,45 @@ CHANNEL_FIELDS: list[dict[str, Any]] = [
     {"key": "offset", "label": "Height offset", "unit": "mm", "type": "number", "step": 0.5,
      "help": "Move the channel up (or down, negative) from the middle of the core."},
     {"key": "side", "label": "Slit from", "type": "select",
-     "options": [["bottom", "bottom surface"], ["top", "top surface"]],
+     "options": [["bottom", "bottom"], ["top", "top"]],
      "help": "The wire reaches the channel through a straight slit from this surface."},
+]  # fmt: skip
+
+JOINER_FIELDS: list[dict[str, Any]] = [
+    {"key": "shape", "label": "Joiner", "type": "select",
+     "options": [["round", "tube or rod"], ["rect", "blade"]]},
+    {"key": "diameter", "label": "Diameter", "unit": "mm", "type": "number", "min": 1, "step": 0.5,
+     "show_if": {"shape": "round"}},
+    {"key": "width", "label": "Thickness", "unit": "mm", "type": "number", "min": 0.5, "step": 0.5,
+     "show_if": {"shape": "rect"}, "help": "Size of the blade along the chord."},
+    {"key": "height", "label": "Height", "unit": "mm", "type": "number", "min": 1, "step": 0.5,
+     "show_if": {"shape": "rect"}},
+    {"key": "position", "label": "Root position", "unit": "% chord", "type": "number", "min": 1, "max": 99,
+     "step": 1, "help": "Centre of the hole at the root, measured from the leading edge."},
+    {"key": "position_tip", "label": "Tip position", "unit": "% chord", "type": "number", "min": 1, "max": 99,
+     "step": 1, "optional": True,
+     "help": "Where the hole comes out of the tip. Blank: square to the root face, as most joiners are."},
+    {"key": "offset", "label": "Height offset", "unit": "mm", "type": "number", "step": 0.5,
+     "help": "Move the hole up (or down, negative) from the middle of the root core."},
+    {"key": "dihedral", "label": "Dihedral", "unit": "°", "type": "number", "step": 0.5,
+     "help": "Total dihedral at the root joint for a straight joiner: the hole runs down towards the tip by half "
+             "of it. 0 for a bent joiner or a flat wing."},
+    {"key": "side", "label": "Slit from", "type": "select",
+     "options": [["bottom", "bottom"], ["top", "top"]]},
+]  # fmt: skip
+
+BAY_FIELDS: list[dict[str, Any]] = [
+    {"key": "station", "label": "From root", "unit": "mm", "type": "number", "min": 1,
+     "help": "Centre of the bay, measured from the root face."},
+    {"key": "position", "label": "Position", "unit": "% chord", "type": "number", "min": 1, "max": 99, "step": 1,
+     "help": "Centre of the bay, measured from the leading edge of the local chord."},
+    {"key": "length", "label": "Length", "unit": "mm", "type": "number", "min": 1, "step": 0.5,
+     "help": "Along the span."},
+    {"key": "width", "label": "Width", "unit": "mm", "type": "number", "min": 1, "step": 0.5,
+     "help": "Along the chord."},
+    {"key": "depth", "label": "Depth", "unit": "mm", "type": "number", "min": 0.5, "step": 0.5,
+     "help": "Below the core surface (under the sheeting) at the centre of the bay."},
+    {"key": "side", "label": "Surface", "type": "select", "options": [["bottom", "bottom"], ["top", "top"]]},
 ]  # fmt: skip
 
 PART_FIELDS: list[dict[str, Any]] = [
@@ -92,6 +130,16 @@ PART_FIELDS: list[dict[str, Any]] = [
     {"key": "channels", "label": "Servo channels", "type": "list", "group": "Servo channels", "item_label": "Channel",
      "add_label": "Add servo channel", "empty": "No servo channels.", "max": 4, "item_fields": CHANNEL_FIELDS,
      "default_item": {"position": 45.0, "position_tip": None, "diameter": 8.0, "offset": 0.0, "side": "bottom"}},
+    {"key": "joiners", "label": "Joiners", "type": "list", "group": "Joiners", "item_label": "Joiner",
+     "add_label": "Add joiner hole", "empty": "No joiner holes.", "max": 4, "item_fields": JOINER_FIELDS,
+     "help": "A straight hole through the whole panel for a joiner tube, rod or blade, cut through a slit.",
+     "default_item": {"shape": "round", "diameter": 10.0, "width": 4.0, "height": 20.0, "position": 30.0,
+                      "position_tip": None, "offset": 0.0, "dihedral": 0.0, "side": "bottom"}},
+    {"key": "bays", "label": "Servo bays", "type": "list", "group": "Servo bays", "item_label": "Bay",
+     "add_label": "Add servo bay", "max": 6, "item_fields": BAY_FIELDS,
+     "empty": "No servo bays. The wire cannot cut them: they are checked here and cut by hand from a printed template.",
+     "default_item": {"station": 150.0, "position": 40.0, "length": 35.0, "width": 15.0, "depth": 12.0,
+                      "side": "bottom"}},
     {"key": "kerf_root_override", "label": "Root kerf override", "unit": "mm", "type": "number", "min": 0,
      "step": 0.05, "optional": True, "group": "Advanced", "help": "Blank: from the material and the cut speed at the root."},
     {"key": "kerf_tip_override", "label": "Tip kerf override", "unit": "mm", "type": "number", "min": 0,
@@ -165,6 +213,8 @@ DEFAULT_PARTS: dict[str, dict[str, Any]] = {
         "te_stock": 0.0,
         "spars": [],
         "channels": [],
+        "joiners": [],
+        "bays": [],
         "kerf_root_override": None,
         "kerf_tip_override": None,
         "points_per_surface": 80,
@@ -209,14 +259,17 @@ def default_project() -> dict[str, Any]:
 
 
 def resolve_airfoil(source: Any) -> Airfoil:
-    """``"naca2412"`` or ``{"name": ..., "dat": "<file contents>"}`` (embedded, so projects are self-contained)."""
+    """A NACA 4-digit code (``"naca2412"``), a database id (``"sd7037"``) or ``{"name": ..., "dat": "<file
+    contents>"}`` (embedded, so projects are self-contained). Never reads files."""
     if isinstance(source, str):
-        if not source.strip().lower().startswith("naca"):
-            raise SliceError(f"unknown airfoil {source!r}; use a NACA code or load a .dat file")
-        return load_airfoil(source)
+        if NACA_SPEC.fullmatch(source.strip()):
+            return load_airfoil(source)
+        if airfoildb.entry(source) is None:
+            raise SliceError(f"unknown airfoil {source!r}; pick one from the database or load a .dat file")
+        return airfoildb.get(source)
     if isinstance(source, dict) and isinstance(source.get("dat"), str):
         return parse_dat(source["dat"], default_name=str(source.get("name") or "airfoil"))
-    raise SliceError("airfoil must be a NACA code or an embedded .dat file")
+    raise SliceError("airfoil must be a NACA code, a database airfoil or an embedded .dat file")
 
 
 @dataclass
@@ -227,6 +280,8 @@ class SliceResult:
     gcode: str
     data: dict[str, Any] = field(default_factory=dict)
     """JSON-ready summary for the GUI."""
+    wing: WingPanel | None = None
+    """The wing panel, for wing projects."""
 
 
 @dataclass
@@ -245,6 +300,9 @@ class _Part:
     stats: dict[str, Any]
     skins: list[tuple[list[Point], list[Point]]] = field(default_factory=list)
     """Finished outlines (root, tip) to draw around the cores, e.g. the sheeted airfoil."""
+    bays: list[tuple[float, float, list[Point], list[Point]]] = field(default_factory=list)
+    """Hand-cut pockets to show: span positions of both ends and their sections there."""
+    wing: WingPanel | None = None
 
 
 def _r(v: float) -> float:
@@ -332,6 +390,8 @@ def _wing_part(part: dict[str, Any], machine: Machine, material: Material, place
     core = {key: _number(part, key, 0.0) or 0.0 for key in ("sheeting_top", "sheeting_bottom", "le_stock", "te_stock")}
     spars = _items(legacy_spars(part), Spar, "spar")
     channels = _items(part.get("channels") or [], Channel, "servo channel")
+    joiners = _items(part.get("joiners") or [], Joiner, "joiner")
+    bays = _items(part.get("bays") or [], ServoBay, "servo bay")
 
     try:
         wing = WingPanel(
@@ -347,6 +407,8 @@ def _wing_part(part: dict[str, Any], machine: Machine, material: Material, place
             points_per_surface=n,
             spars=spars,
             channels=channels,
+            joiners=joiners,
+            bays=bays,
             **core,
         )
         # Kerf from the material, at the speed each end of the core actually moves.
@@ -354,30 +416,56 @@ def _wing_part(part: dict[str, Any], machine: Machine, material: Material, place
         ratio = _speed_ratios(polyline_length(root_core + root_core[:1]), polyline_length(tip_core + tip_core[:1]))
         kerf = _kerfs(part, material, ratio)
         wing = dataclasses.replace(wing, root_kerf=kerf[0], tip_kerf=kerf[1])
+        layout = layout_wing(wing, machine, placement)
+        bay_info = wing.bay_geometry()
     except (TypeError, ValueError) as exc:  # includes CoreError
+        if isinstance(exc, PlacementError):
+            raise
         raise SliceError(str(exc)) from exc
 
-    layout = layout_wing(wing, machine, placement)
     comments = [
         f"root {root_airfoil.name} {root_chord:g} mm, tip {tip_airfoil.name} {tip_chord:g} mm, span {span:g} mm"
     ]
     warnings: list[str] = []
     stats: dict[str, Any] = {"airfoils": {"root": root_airfoil.name, "tip": tip_airfoil.name}}
     spec = wing.core_spec()
-    built_up = not spec.plain
+    built_up = not spec.plain or bool(bay_info)
     if built_up:
-        comments += core_comments(spec)
+        comments += core_comments(spec) + bay_comments(bay_info)
         stats["core"] = {
             "te_cutback": {"root": round(cutbacks["root_te"], 1), "tip": round(cutbacks["tip_te"], 1)},
             "le_cutback": {"root": round(cutbacks["root_le"], 1), "tip": round(cutbacks["tip_le"], 1)},
             "spars": sum(1 for sp in spec.spars if sp.depth_top > 0 or sp.depth_bottom > 0),
             "channels": len(spec.channels),
+            "joiners": len(spec.joiners),
+            "bays": [
+                {
+                    "number": b.number,
+                    "side": b.bay.side,
+                    "size": [b.bay.length, b.bay.width, b.bay.depth],
+                    "from_root": round(b.z0, 1),
+                    "behind_front": round(b.x0 - b.core_le, 1),
+                    "channels": list(b.channels),
+                }
+                for b in bay_info
+            ],
         }
-        if spec.channels:
-            sides = sorted({c.side for c in spec.channels})
+        holes = list(spec.channels) + list(spec.joiners)
+        if holes:
+            sides = sorted({h.side for h in holes})
+            kinds = [
+                f"{n} {what}"
+                for n, what in ((len(spec.channels), "servo channel(s)"), (len(spec.joiners), "joiner hole(s)"))
+                if n
+            ]
             warnings.append(
-                f"{len(spec.channels)} servo channel(s) are reached through a slit from the {' and '.join(sides)} "
-                "surface, one kerf wide: tape or sheet over it."
+                f"{' and '.join(kinds)} are reached through a slit from the {' and '.join(sides)} surface, one kerf wide: "
+                "tape or sheet over it."
+            )
+        if bay_info:
+            warnings.append(
+                f"{len(bay_info)} servo bay(s) cannot be cut by the wire: print the 1:1 template "
+                "(Preview → Servo bay template) and cut them by hand."
             )
         meet = max(cutbacks["root_te"], cutbacks["tip_te"])
         if spec.sheeted and meet > spec.te_stock + 0.5:
@@ -398,6 +486,8 @@ def _wing_part(part: dict[str, Any], machine: Machine, material: Material, place
         warnings=warnings,
         stats=stats,
         skins=[(layout.root_skin, layout.tip_skin)] if built_up else [],
+        bays=layout.bays,
+        wing=wing,
     )
 
 
@@ -428,7 +518,10 @@ def _items(raw: Any, cls: type, label: str) -> tuple[Any, ...]:
             raise SliceError(f"{label} {number} must be an object")
         values = {k: v for k, v in item.items() if k in allowed}
         for key, value in values.items():
-            if key != "side" and value is not None and (isinstance(value, bool) or not isinstance(value, (int, float))):
+            if key in ("side", "shape"):
+                if not isinstance(value, str):
+                    raise SliceError(f"{label} {number}: {key} must be text")
+            elif value is not None and (isinstance(value, bool) or not isinstance(value, (int, float))):
                 raise SliceError(f"{label} {number}: {key} must be a number")
         try:
             out.append(cls(**values))
@@ -461,7 +554,23 @@ def core_comments(spec: CoreSpec) -> list[str]:
             f"servo channel {number}: {channel.diameter:g} mm at {where(channel)}, "
             f"offset {channel.offset:g} mm, slit from the {channel.side}"
         )
+    for number, joiner in enumerate(spec.joiners, start=1):
+        tip = "square to the root" if joiner.position_tip is None else f"tip {joiner.position_tip:g} %"
+        dihedral = f", dihedral {joiner.dihedral:g} deg" if joiner.dihedral else ""
+        lines.append(
+            f"joiner {number}: {joiner.describe()} at {joiner.position:g} % ({tip}), offset {joiner.offset:g} mm"
+            f"{dihedral}, slit from the {joiner.side}"
+        )
     return lines
+
+
+def bay_comments(bays: list[BayGeometry]) -> list[str]:
+    """G-code header lines for servo bays, which are cut by hand."""
+    return [
+        f"servo bay {b.number} (cut by hand): {b.bay.describe()}, {b.z0:.1f} mm from the root, "
+        f"front edge {b.x0 - b.core_le:.1f} mm behind the front of the core"
+        for b in bays
+    ]
 
 
 def _drawing_source(part: dict[str, Any]) -> tuple[str, str, str]:
@@ -658,8 +767,28 @@ def _finish(
                 {"root": region_json(r), "tip": region_json(tp)} for r, tp in zip(built.root_regions, built.tip_regions)
             ],
             "skins": [{"root": _pts(r), "tip": _pts(tp)} for r, tp in built.skins],
+            "bays": [
+                {
+                    "z0": _r(z0),
+                    "z1": _r(z1),
+                    "root": {"outer": _pts(a), "holes": []},
+                    "tip": {"outer": _pts(b), "holes": []},
+                }
+                for z0, z1, a, b in built.bays
+            ],
         },
         "block": block,
         "path": {"t": times, "xy": xy_pts, "uv": uv_pts, "cut": cut},
     }
-    return SliceResult(machine, material, toolpath, gcode, data)
+    return SliceResult(machine, material, toolpath, gcode, data, built.wing)
+
+
+def bay_template(project: dict[str, Any]) -> tuple[str, str]:
+    """File name and SVG of the 1:1 servo bay template for a wing project."""
+    from .template import bay_template_svg
+
+    result = slice_project(project)
+    if result.wing is None or not result.wing.bays:
+        raise SliceError("this part has no servo bays")
+    title = str(project.get("title") or "Wing panel")
+    return f"{title}-servo-bays.svg", bay_template_svg(result.wing, title)

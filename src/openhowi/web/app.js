@@ -56,7 +56,7 @@ function download(name, text, type = 'text/plain') {
 const slug = (s) => (s || 'part').toLowerCase().replace(/[^a-z0-9]+/g, '-').replace(/^-|-$/g, '') || 'part';
 
 const state = {
-  info: null, presets: { machine: [], material: [] }, airfoils: { naca: [], library: [] },
+  info: null, presets: { machine: [], material: [] }, airfoils: { naca: [], library: [], database: [] }, foilDb: null,
   project: null, result: null, sliceSeq: 0, sliceTimer: null, tab: 'prepare', stash: {}, drawingInfo: null,
   device: { connected: false, status: { state: 'Disconnected' }, job: null, lastLog: 0, polling: false },
   scrub: { t: Infinity, playing: false },
@@ -187,15 +187,24 @@ function airfoilInput(id, f, value, set) {
     sel.append(new Option(`${value.name} (in project)`, 'embedded'));
     current = 'embedded';
   } else if (typeof value === 'string') {
-    current = value.toLowerCase().replace(/[\s-]/g, '');
-    if (![...sel.options].some((o) => o.value === current)) sel.append(new Option(value, current));
+    current = value.toLowerCase().replace(/[\s_-]/g, '');
+    if (![...sel.options].some((o) => o.value === current)) {
+      const entry = state.airfoils.database.find((a) => a.id === current);
+      const db = el('optgroup', { label: 'Database' });
+      db.append(new Option(entry ? `${entry.name} · ${num(entry.thickness, 1)} %` : value, current));
+      sel.append(db);
+    }
   }
+  sel.append(new Option('Browse airfoil database…', 'browse'));
   sel.append(new Option('Load .dat file…', 'load'));
   sel.value = current;
   sel.addEventListener('change', async () => {
     const v = sel.value;
     try {
-      if (v === 'load') {
+      if (v === 'browse') {
+        const picked = await browseAirfoils(current);
+        if (picked) { set(picked); renderPartForm(); } else sel.value = current;
+      } else if (v === 'load') {
         const picked = await pickAirfoilFile();
         if (picked) { set(picked); renderPartForm(); } else sel.value = current;
       } else if (v.startsWith('lib:')) {
@@ -213,6 +222,65 @@ function airfoilInput(id, f, value, set) {
     }
   });
   return sel;
+}
+
+// Airfoil database browser: resolves with the chosen airfoil id, or null.
+async function browseAirfoils(current) {
+  if (!state.foilDb) state.foilDb = await api('/api/airfoils/database');
+  const db = state.foilDb;
+  const dlg = $('#dlg-airfoils');
+  const search = $('#foil-search');
+  const list = $('#foil-list');
+  const cats = $('#foil-cats');
+  let category = null;
+  let chosen = null;
+  const svgNS = 'http://www.w3.org/2000/svg';
+  const thumb = (outline) => {
+    const svg = document.createElementNS(svgNS, 'svg');
+    const ys = outline.map((q) => q[1]);
+    const y0 = Math.min(...ys); const y1 = Math.max(...ys);
+    svg.setAttribute('viewBox', `-0.02 ${(-y1 - 0.02).toFixed(3)} 1.04 ${(y1 - y0 + 0.04).toFixed(3)}`);
+    svg.setAttribute('preserveAspectRatio', 'xMidYMid meet');
+    const path = document.createElementNS(svgNS, 'path');
+    path.setAttribute('d', outline.map((q, i) => `${i ? 'L' : 'M'}${q[0]} ${-q[1]}`).join(' ') + 'Z');
+    svg.append(path);
+    return svg;
+  };
+  const render = () => {
+    const words = search.value.toLowerCase().split(/\s+/).filter(Boolean);
+    const rows = db.airfoils.filter((a) => (!category || a.category === category) && words.every((w) => (
+      `${a.id} ${a.name} ${a.note} ${a.category}`.toLowerCase().includes(w) || a.id.includes(w.replace(/[\s_-]/g, '')))));
+    list.replaceChildren(...rows.map((a) => {
+      const props = a.camber ? `${num(a.thickness, 1)} % thick · camber ${num(a.camber, 1)} %` : `${num(a.thickness, 1)} % thick · symmetric`;
+      const button = el('button', { type: 'button', class: `foil${a.id === current ? ' current' : ''}`, title: a.category },
+        thumb(a.outline),
+        el('span', { class: 'name' }, el('span', {}, a.name), el('code', {}, a.id)),
+        el('span', { class: 'props' }, props, a.reflex ? el('span', { class: 'tag' }, 'reflexed') : null),
+        el('span', { class: 'note' }, a.note));
+      button.addEventListener('click', () => { chosen = a.id; dlg.close('pick'); });
+      return button;
+    }));
+    if (!rows.length) list.append(el('div', { class: 'foil-empty' }, 'No airfoil matches.'));
+  };
+  const chip = (label, value) => {
+    const b = el('button', { type: 'button', role: 'radio', 'aria-checked': String(category === value) }, label);
+    b.addEventListener('click', () => {
+      category = value;
+      for (const c of $$('button', cats)) c.setAttribute('aria-checked', String(c === b));
+      render();
+    });
+    return b;
+  };
+  cats.replaceChildren(chip('All', null), ...db.categories.map((c) => chip(c, c)));
+  search.value = '';
+  search.oninput = render;
+  render();
+  return new Promise((resolve) => {
+    dlg.addEventListener('close', () => resolve(chosen), { once: true });
+    dlg.showModal();
+    search.focus();
+    $('.foil.current', list)?.scrollIntoView({ block: 'nearest' });
+  });
 }
 
 function pickAirfoilFile() {
@@ -292,8 +360,16 @@ function listField(f, value, set) {
       renderPartForm();
     });
     const card = el('div', { class: 'list-item' }, el('div', { class: 'list-head' }, el('span', {}, `${f.item_label} ${index + 1}`), remove));
+    // Fields shown only for some values of another field (e.g. diameter for round joiners)
+    const controls = new Set(f.item_fields.flatMap((sub) => Object.keys(sub.show_if || {})));
     for (const sub of f.item_fields) {
-      card.append(fieldEl(sub, item[sub.key], (v) => { item[sub.key] = v; set(items); }));
+      const shown = Object.entries(sub.show_if || {}).every(([k, v]) => (item[k] ?? f.default_item[k]) === v);
+      if (!shown) continue;
+      card.append(fieldEl(sub, item[sub.key] ?? f.default_item[sub.key], (v) => {
+        item[sub.key] = v;
+        set(items);
+        if (controls.has(sub.key)) renderPartForm();
+      }));
     }
     box.append(card);
   });
@@ -528,8 +604,11 @@ function renderResult() {
       ? [['Core ends before TE', `root ${num(s.core.te_cutback.root, 1)} · tip ${num(s.core.te_cutback.tip, 1)} mm`]] : []),
     ...(s.core && (s.core.le_cutback.root > 0.05 || s.core.le_cutback.tip > 0.05)
       ? [['Core starts behind LE', `root ${num(s.core.le_cutback.root, 1)} · tip ${num(s.core.le_cutback.tip, 1)} mm`]] : []),
-    ...(s.core && (s.core.spars || s.core.channels)
-      ? [['Spars · servo channels', `${s.core.spars} · ${s.core.channels}`]] : []),
+    ...(s.core && (s.core.spars || s.core.channels || s.core.joiners)
+      ? [['Spars · channels · joiners', `${s.core.spars} · ${s.core.channels} · ${s.core.joiners}`]] : []),
+    ...(s.core?.bays || []).map((b) => [`Servo bay ${b.number}`,
+      `${b.size.map((v) => num(v, 1).replace(/\.0$/, '')).join(' × ')} mm, ${b.side}; ${num(b.from_root, 1)} mm from the root, `
+      + `${num(b.behind_front, 1)} mm behind the front${b.channels.length ? `; reaches channel ${b.channels.join(', ')}` : ''}`]),
     ['Peak carriage speed', `${num(s.peak_speed.XY, 0)} · ${num(s.peak_speed.UV, 0)} mm/min`],
     [`${xy} range`, `X ${num(s.extents.XY[2], 0)} · Y ${num(s.extents.XY[3], 0)} mm`],
     [`${uv} range`, `X ${num(s.extents.UV[2], 0)} · Y ${num(s.extents.UV[3], 0)} mm`],
@@ -537,6 +616,9 @@ function renderResult() {
   ];
   for (const [k, v] of rows) stats.append(el('dt', {}, k), el('dd', {}, v));
   for (const w of r.warnings) warnings.append(el('li', {}, w));
+  const hasBays = (r.part.bays || []).length > 0;
+  $('#bay-row').hidden = !hasBays;
+  $('#legend-bay').hidden = !hasBays;
 
   const b = r.block;
   const size = `${num(b.x1 - b.x0, 0)} × ${num(b.y1 - b.y0, 0)} × ${num(b.z1 - b.z0, 0)} mm`;
@@ -813,6 +895,14 @@ function wire() {
     } catch (err) { alert(`Could not open ${file.name}: ${err.message}`); }
   });
   $('#btn-kerf').addEventListener('click', kerfTest);
+  $('#btn-bays').addEventListener('click', async () => {
+    try {
+      const r = await api('/api/template/bays', { project: state.project });
+      download(r.filename.replace(/[^\w.-]+/g, '-'), r.svg, 'image/svg+xml');
+    } catch (err) {
+      alert(err.message);
+    }
+  });
 
   $('#btn-ports').addEventListener('click', refreshPorts);
   $('#btn-connect').addEventListener('click', async () => {

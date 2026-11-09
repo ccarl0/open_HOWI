@@ -101,20 +101,29 @@ def _pair(line: str) -> Point | None:
 
 
 def parse_dat(text: str, default_name: str = "airfoil") -> Airfoil:
-    """Parse a Selig or Lednicer formatted airfoil coordinate file."""
+    """Parse a Selig or Lednicer formatted airfoil coordinate file.
+
+    The first line is the name. Notes after the coordinates are ignored when a
+    blank line separates them, as in many files of the UIUC database.
+    """
     name: str | None = None
     pairs: list[Point] = []
+    blank = False
     for raw in text.splitlines():
         line = raw.strip()
         if not line:
+            blank = True
             continue
         pair = _pair(line)
         if pair is None:
             if name is None and not pairs:
                 name = line
                 continue
+            if pairs and blank:
+                break  # trailing notes
             raise AirfoilError(f"cannot parse airfoil line: {raw!r}")
         pairs.append(pair)
+        blank = False
 
     if not pairs:
         raise AirfoilError("no coordinates found")
@@ -167,15 +176,22 @@ def naca4(code: str, n: int = 100, closed_te: bool = True) -> Airfoil:
     return Airfoil(f"NACA {digits}", _canonical(list(reversed(upper)) + lower[1:]))
 
 
-_NACA_SPEC = re.compile(r"naca\s*-?\s*(\d{4})", re.IGNORECASE)
+NACA_SPEC = re.compile(r"naca\s*-?\s*(\d{4})", re.IGNORECASE)
 
 
 def load_airfoil(spec: str, base_dir: str | Path | None = None) -> Airfoil:
-    """Load an airfoil from ``"naca2412"``-style specs or a ``.dat`` file path."""
-    match = _NACA_SPEC.fullmatch(spec.strip())
+    """Load an airfoil from a NACA 4-digit code (``"naca2412"``), a ``.dat`` file path,
+    or the id of an airfoil in the built-in database (``"sd7037"``, see ``openhowi airfoils``)."""
+    match = NACA_SPEC.fullmatch(spec.strip())
     if match:
         return naca4(match.group(1))
     path = Path(spec).expanduser()
     if not path.is_absolute() and base_dir is not None:
         path = Path(base_dir) / path
+    if not path.exists():
+        from . import airfoildb
+
+        if airfoildb.entry(spec) is not None:
+            return airfoildb.get(spec)
+        raise AirfoilError(f"{spec!r} is neither an airfoil file nor in the airfoil database (see `openhowi airfoils`)")
     return Airfoil.from_file(path)

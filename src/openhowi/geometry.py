@@ -185,6 +185,39 @@ def segments_cross(p1: Point, p2: Point, q1: Point, q2: Point) -> bool:
     return ((d1 > 0 > d2) or (d1 < 0 < d2)) and ((d3 > 0 > d4) or (d3 < 0 < d4))
 
 
+def point_segment_distance(p: Point, a: Point, b: Point) -> float:
+    dx, dy = b[0] - a[0], b[1] - a[1]
+    length2 = dx * dx + dy * dy
+    t = 0.0 if length2 == 0.0 else max(0.0, min(1.0, ((p[0] - a[0]) * dx + (p[1] - a[1]) * dy) / length2))
+    return math.hypot(p[0] - (a[0] + t * dx), p[1] - (a[1] + t * dy))
+
+
+def outline_gap(a: Sequence[Point], b: Sequence[Point]) -> float:
+    """Smallest distance between two closed outlines (a 2-point outline is a line segment).
+
+    Returns 0 when they touch or cross, or when one lies inside the other.
+    """
+    if len(a) > 2 and any(point_in_polygon(p, a) for p in b[:1]):
+        return 0.0
+    if len(b) > 2 and any(point_in_polygon(p, b) for p in a[:1]):
+        return 0.0
+    edges_a = list(zip(a, list(a[1:]) + [a[0]])) if len(a) > 2 else [(a[0], a[-1])]
+    edges_b = list(zip(b, list(b[1:]) + [b[0]])) if len(b) > 2 else [(b[0], b[-1])]
+    best = math.inf
+    for p1, p2 in edges_a:
+        for q1, q2 in edges_b:
+            if segments_cross(p1, p2, q1, q2):
+                return 0.0
+            best = min(
+                best,
+                point_segment_distance(p1, q1, q2),
+                point_segment_distance(p2, q1, q2),
+                point_segment_distance(q1, p1, p2),
+                point_segment_distance(q2, p1, p2),
+            )
+    return best
+
+
 def bounds(points: Sequence[Point]) -> tuple[float, float, float, float]:
     xs = [p[0] for p in points]
     ys = [p[1] for p in points]

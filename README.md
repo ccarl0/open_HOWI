@@ -32,7 +32,7 @@ the `openhowi` process. It works offline.
 
 | Tab | What it does |
 |---|---|
-| **Prepare** | Choose a **machine** and a **material** preset, then set up the part: a **wing panel** (root/tip airfoils from NACA or any `.dat` file, chords, span, sweep, washout, sheeting allowance, LE/TE stock and spar slots) or a **2D shape** from a DXF or SVG drawing. The part, the foam block and both carriage paths update live in 3D as you type. |
+| **Prepare** | Choose a **machine** and a **material** preset, then set up the part: a **wing panel** (root/tip airfoils from the built-in database, NACA or any `.dat` file, chords, span, sweep, washout, sheeting allowance, LE/TE stock, spar slots, servo channels, joiner holes and servo bays) or a **2D shape** from a DXF or SVG drawing. The part, the foam block and both carriage paths update live in 3D as you type. |
 | **Preview** | Estimated time, cut lengths, kerf at each end, peak carriage speeds, the foam block you need and where to put it. Scrub or play back the cut with the timeline. Export G-code. |
 | **Device** | Connect over USB (or to the built-in **simulator**), live position, jog both carriages together or separately, home, unlock, set zero, wire on/off, start/pause/resume/stop the job, console. A **STOP** button (feed hold + reset, wire off) stays in the top bar while connected. |
 
@@ -48,13 +48,28 @@ the `openhowi` process. It works offline.
 
 Your presets and airfoil library are stored in `~/.config/openhowi` (Linux),
 `~/Library/Application Support/openhowi` (macOS) or `%APPDATA%\openhowi` (Windows).
-Projects save as `.howi.json` files with the airfoils embedded, so you can share them.
+Projects save as `.howi.json` files with loaded `.dat` airfoils embedded (database airfoils by id), so you can share them.
 
 **Try it without a machine:** pick *Simulator (10× speed)* as the port in the Device tab.
 
-### Built-up wings: sheeting, LE/TE stock, spars and servo channels
+### Airfoil database
 
-For cores that get skinned, open the wing panel's **Core**, **Spars** and **Servo channels** groups:
+Pick **Browse airfoil database…** in an airfoil field to choose from 68 common model-aircraft
+sections, grouped as trainer & sport, gliders, flying wings (reflexed), symmetric & tail, high lift,
+and full-size & scale, with their thickness and camber. Search by name or use (*hand launch*,
+*flying wing*). You can still load any `.dat` file (Selig or Lednicer format).
+
+![Airfoil database: the gliders category](docs/airfoils.png)
+
+The coordinates come from the [UIUC Airfoil Coordinates Database](https://m-selig.ae.illinois.edu/ads/coord_database.html)
+(see `src/openhowi/airfoils/README.md`); the NACA 4-digit sections are generated. In job files and on
+the command line an airfoil is a NACA code (`naca2412`), a database id (`sd7037`) or a `.dat` file;
+`openhowi airfoils` lists the ids.
+
+### Built-up wings: sheeting, LE/TE stock, spars, channels, joiners and servo bays
+
+For cores that get skinned, open the wing panel's **Core**, **Spars**, **Servo channels**, **Joiners**
+and **Servo bays** groups:
 
 ![Core sections with their wire paths: two spars and a servo channel in a sheeted core; three spar caps and two channels in a plain core](docs/core.png)
 
@@ -71,10 +86,29 @@ For cores that get skinned, open the wing panel's **Core**, **Spars** and **Serv
   chord, centred in the core (or moved up or down), at the diameter you set. The wire cannot be
   lifted, so it reaches the channel through a straight slit from the bottom (or top) surface, goes
   round it and leaves along the slit; tape or sheet over the slit.
+- **Joiners**: a straight hole through the whole panel for a joiner tube or rod (round) or a
+  blade (rectangular), cut like a servo channel through a slit (*+ Add joiner hole*). By default it
+  runs square to the root face, as most joiners do; set a *tip position* to make it follow a swept or
+  tapered panel, and a *dihedral* for a straight joiner across a dihedral joint (the hole then runs
+  down towards the tip by half the angle). The hole's section in each face is worked out from its
+  axis, so a slanted tube still comes out round and true to size.
+- **Servo bays** (*+ Add servo bay*): a pocket at a distance from the root, at a % of the local chord,
+  with its length, width and depth. The wire can only cut what runs through the whole panel, so
+  bays are cut by hand: open_HOWI checks that each bay fits, leaves foam under it and stays clear of
+  spar slots, joiners and other bays, shows it in red in 3D, says whether a servo channel runs into
+  it, and prints a **1:1 template** (*Preview → Servo bay template*, an SVG in mm) with the bays,
+  slots and slits in plan view and the distances to measure from the root face and the front of
+  the core.
 - Anything that would leave less than 1 mm of foam, does not fit on the core, or overlaps another
-  slot or channel is refused with a message saying which one.
+  slot, channel or joiner is refused with a message saying which one. So is a layout where two cuts
+  swap places between root and tip (for example a joiner square to the root of a swept panel
+  crossing a spar slot): their cuts would cross inside the panel.
 - Root and tip are built with the same number of points, so every slot, channel and edge runs
   straight from root to tip.
+
+![Root sections with their wire paths: a joiner tube from below, a blade from above, spar caps and a servo channel; a sheeted core with an 8 mm tube under the main spar](docs/joiners.png)
+
+![Servo bay template: the panel in plan view with the bay, spar slot and slits, and the distances to measure](docs/bay-template.png)
 
 `examples/sheeted_wing.toml` shows the same options for the command line.
 
@@ -162,7 +196,9 @@ way. Switch the machine preset to *Units per minute (G94)* only if yours lacks G
 openhowi slice my-wing.howi.json -o my-wing.gcode   # slice a project saved from the app
 openhowi shape former.svg --span 80 --material "XPS extruded (blue/pink)"   # cut a DXF/SVG drawing
 openhowi wing examples/tapered_wing.toml --svg wing.svg   # TOML job file, explicit kerf values
-openhowi wing examples/sheeted_wing.toml             # sheeting, LE/TE stock and spar slots
+openhowi wing examples/sheeted_wing.toml --bay-template bays.svg   # built-up core + 1:1 servo bay template
+openhowi airfoils glider                             # search the airfoil database
+openhowi airfoils --export sd7037 -o sd7037.dat      # write a database airfoil as a .dat file
 openhowi send wing.gcode --port /dev/ttyACM0         # stream to GRBL (COM3 etc. on Windows)
 openhowi send wing.gcode --dry-run                   # check a file without a machine
 openhowi naca 2412 -o naca2412.dat                   # write a NACA 4-digit airfoil
@@ -181,7 +217,7 @@ openhowi naca 2412 -o naca2412.dat                   # write a NACA 4-digit airf
 ## Roadmap
 
 - Arrange several parts in one block automatically; lead-ins from below or the side when shapes block each other
-- Joiner and dowel holes, servo bays and other spanwise-partial cut-outs
+- Wing-root dowel and hold-down holes on the template; cutting short joiner holes with a heated tube
 - Homing/limit-aware placement and a block-size optimiser
 - Rotary-table (5th axis) support
 - Packaged desktop builds (one-click install on Windows/macOS)
@@ -196,10 +232,10 @@ ruff check src tests && ruff format --check src tests
 
 | Module | |
 |---|---|
-| `airfoil`, `geometry`, `wing`, `core` | Airfoil parsing/generation, 2D geometry, wing sections with sheeting, stock and spar slots |
+| `airfoil`, `airfoildb`, `geometry`, `wing`, `core` | Airfoil parsing/generation and the airfoil database, 2D geometry, wing sections with sheeting, stock, slots, channels, joiners and servo bays |
 | `svgimport`, `dxfimport`, `curves`, `shapes` | Drawing import, curve flattening, outlines/holes, kerf and cut planning for 2D shapes |
 | `toolpath`, `gcode` | Placement, the 4-axis projection, feed timing and G-code output |
-| `material`, `presets`, `project`, `calibration` | Slicer layer: presets, kerf model, project slicing, kerf test |
+| `material`, `presets`, `project`, `calibration`, `template` | Slicer layer: presets, kerf model, project slicing, kerf test, servo bay template |
 | `simulator`, `controller`, `sender` | Simulated GRBL, the threaded device controller, the CLI streamer |
 | `server`, `web/` | Local HTTP API and the browser UI (three.js r179 vendored under `web/vendor`) |
 
@@ -209,4 +245,6 @@ open_HOWI is free software: you can redistribute it and/or modify it under the t
 [GNU General Public License](LICENSE) as published by the Free Software Foundation, either
 version 3 of the License, or (at your option) any later version.
 
-The bundled three.js (`src/openhowi/web/vendor/three`) is MIT licensed.
+The bundled three.js (`src/openhowi/web/vendor/three`) is MIT licensed. The airfoil coordinates in
+`src/openhowi/airfoils` come from the UIUC Airfoil Coordinates Database, by way of AeroSandbox (MIT);
+see the README in that folder.

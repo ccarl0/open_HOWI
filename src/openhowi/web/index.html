@@ -43,6 +43,7 @@
         <span><i class="sw uv"></i>UV carriage path</span>
         <span><i class="sw wire"></i>Wire</span>
         <span><i class="sw part"></i>Part</span>
+        <span id="legend-bay" hidden><i class="sw bay"></i>Servo bay (cut by hand)</span>
       </div>
       <div class="banner" id="banner" hidden></div>
       <div class="busy" id="busy" hidden>Slicing…</div>
@@ -93,6 +94,10 @@
           <h2>Cut summary</h2>
           <dl class="stats" id="stats"></dl>
           <ul class="warnings" id="warnings"></ul>
+          <div class="row" id="bay-row" hidden>
+            <button id="btn-bays">Servo bay template</button>
+            <span class="hint">1:1 SVG: print at 100 % and cut the bays by hand</span>
+          </div>
         </section>
         <section class="card">
           <h2>Foam block</h2>
@@ -223,6 +228,17 @@
         <button value="cancel">Cancel</button>
         <button value="ok" class="primary" id="confirm-ok">Start</button>
       </div>
+    </form>
+  </dialog>
+
+  <dialog id="dlg-airfoils" class="wide">
+    <form method="dialog" class="dialog">
+      <h2>Airfoil database</h2>
+      <input type="search" id="foil-search" placeholder="Search: SD7037, glider, flying wing…" autocomplete="off" spellcheck="false" aria-label="Search airfoils">
+      <div class="chips" id="foil-cats" role="radiogroup" aria-label="Category"></div>
+      <div class="foil-list" id="foil-list"></div>
+      <p class="hint">Coordinates from the UIUC Airfoil Coordinates Database (M. Selig). NACA 4-digit sections are generated. Thickness and camber are in % of the chord.</p>
+      <div class="row end"><button value="cancel">Close</button></div>
     </form>
   </dialog>
 

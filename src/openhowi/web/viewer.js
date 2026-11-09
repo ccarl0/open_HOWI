@@ -75,6 +75,7 @@ export class Viewer {
       bg: cssColor('--view-bg', '#e9edf2'), grid: cssColor('--view-grid', '#c9d0d9'),
       frame: cssColor('--view-frame', '#8d97a3'), xy: cssColor('--xy', '#1c7ed6'), uv: cssColor('--uv', '#9c36b5'),
       wire: cssColor('--wire', '#f03e3e'), part: cssColor('--part', '#f0dcae'), block: cssColor('--block', '#9fb3c8'),
+      bay: cssColor('--bay', '#e03131'),
       muted: cssColor('--muted', '#66717e'),
     };
     this.scene.background = this.colors.bg;
@@ -193,6 +194,11 @@ export class Viewer {
       color: this.colors.part, roughness: 0.85, side: THREE.DoubleSide, flatShading: r.kind === 'shape',
     });
     for (const solid of r.part.solids) this.addSolid(solid, r.part.z_root, r.part.z_tip, partMat);
+    // Servo bays (cut by hand): the pocket, standing slightly proud of the surface so it shows
+    const bayMat = new THREE.MeshStandardMaterial({
+      color: this.colors.bay, roughness: 0.7, side: THREE.DoubleSide, transparent: true, opacity: 0.85,
+    });
+    for (const bay of r.part.bays || []) this.addSolid(bay, bay.z0, bay.z1, bayMat);
     // Finished outline (e.g. the sheeted airfoil) around the core, at both faces
     const skinMat = new THREE.LineBasicMaterial({ color: this.colors.frame, transparent: true, opacity: 0.9 });
     for (const skin of r.part.skins || []) {

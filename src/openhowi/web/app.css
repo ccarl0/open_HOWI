@@ -23,6 +23,7 @@
   --wire: #f03e3e;
   --part: #f0dcae;
   --block: #9fb3c8;
+  --bay: #e03131;
   --radius: 8px;
   --shadow: 0 1px 2px rgb(0 0 0 / 6%), 0 2px 8px rgb(0 0 0 / 5%);
   color-scheme: light;
@@ -53,6 +54,7 @@
     --wire: #ff6b6b;
     --part: #d9c08a;
     --block: #6f8296;
+    --bay: #ff6b6b;
     --shadow: 0 1px 2px rgb(0 0 0 / 40%);
     color-scheme: dark;
   }
@@ -63,7 +65,7 @@
   --accent: #ff7a2e; --accent-strong: #ff8f4f; --accent-ink: #1a0d04; --danger: #ff5c57; --ok: #51cf66;
   --warn-bg: #3a2a12; --warn-ink: #ffd8a8; --err-bg: #3b1717; --err-ink: #ffc9c9; --view-bg: #101317;
   --view-grid: #262c35; --view-frame: #59636f; --xy: #4dabf7; --uv: #da77f2; --wire: #ff6b6b; --part: #d9c08a;
-  --block: #6f8296; --shadow: 0 1px 2px rgb(0 0 0 / 40%); color-scheme: dark;
+  --block: #6f8296; --bay: #ff6b6b; --shadow: 0 1px 2px rgb(0 0 0 / 40%); color-scheme: dark;
 }
 
 * { box-sizing: border-box; }
@@ -136,6 +138,7 @@ input.invalid { border-color: var(--danger); }
 .sw { width: 14px; height: 3px; border-radius: 2px; display: inline-block; }
 .sw.xy { background: var(--xy); } .sw.uv { background: var(--uv); } .sw.wire { background: var(--wire); }
 .sw.part { background: var(--part); height: 9px; }
+.sw.bay { background: var(--bay); height: 9px; }
 .banner {
   position: absolute; left: 12px; right: 12px; bottom: 70px; margin: 0 auto; max-width: 720px;
   padding: 9px 12px; border-radius: var(--radius); background: var(--err-bg); color: var(--err-ink);
@@ -284,3 +287,22 @@ dialog::backdrop { background: rgb(10 14 20 / 45%); }
 .list-head button:hover { color: var(--danger); }
 .list-field .add { align-self: flex-start; color: var(--accent-strong); background: transparent; border-style: dashed; }
 .list-empty { margin: 0; }
+
+/* Airfoil database browser ---------------------------------------------------------- */
+dialog.wide { width: min(720px, calc(100vw - 32px)); }
+#foil-search { width: 100%; margin-bottom: 8px; }
+.chips { display: flex; flex-wrap: wrap; gap: 6px; margin-bottom: 8px; }
+.chips button { font-size: 12.5px; padding: 3px 10px; border-radius: 999px; }
+.chips button[aria-checked="true"] { background: var(--accent); border-color: var(--accent); color: var(--accent-ink); }
+.foil-list { display: grid; grid-template-columns: repeat(auto-fill, minmax(200px, 1fr)); gap: 8px; max-height: min(52vh, 460px); overflow-y: auto; padding: 2px; margin-bottom: 8px; }
+.foil { display: flex; flex-direction: column; align-items: stretch; gap: 2px; text-align: left; padding: 8px 10px; background: var(--panel-2); border: 1px solid var(--border); border-radius: 8px; font: inherit; color: inherit; cursor: pointer; }
+.foil:hover, .foil:focus-visible { border-color: var(--accent); }
+.foil.current { border-color: var(--accent); box-shadow: inset 0 0 0 1px var(--accent); }
+.foil svg { width: 100%; height: 34px; }
+.foil svg path { fill: color-mix(in srgb, var(--part) 70%, transparent); stroke: var(--text); stroke-width: 1; vector-effect: non-scaling-stroke; }
+.foil .name { font-weight: 600; display: flex; justify-content: space-between; gap: 6px; }
+.foil .name code { font-weight: 400; color: var(--muted); font-size: 11.5px; }
+.foil .props { font-size: 12px; color: var(--muted); }
+.foil .note { font-size: 12px; }
+.foil .tag { font-size: 11px; padding: 0 6px; border-radius: 999px; background: var(--warn-bg); color: var(--warn-ink); margin-left: 4px; }
+.foil-empty { grid-column: 1 / -1; color: var(--muted); text-align: center; padding: 20px; }

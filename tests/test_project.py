@@ -76,7 +76,7 @@ def test_kerf_override_and_embedded_airfoil():
     [
         (lambda p: p["placement"].update(root_offset=900), "does not fit"),
         (lambda p: p["machine"].update(x_travel=100), "exceeds"),
-        (lambda p: p["part"].update(root_airfoil="clarky"), "unknown airfoil"),
+        (lambda p: p["part"].update(root_airfoil="nosuchfoil"), "unknown airfoil"),
         (lambda p: p["part"].update(span="long"), "must be a number"),
         (lambda p: p["material"].update(cut_feed=0), "cut_feed"),
         (lambda p: p["machine"].update(bogus=1), "unknown machine setting"),

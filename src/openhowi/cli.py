@@ -1,5 +1,5 @@
 # SPDX-License-Identifier: GPL-3.0-or-later
-"""Command line interface: ``openhowi wing``, ``openhowi send`` and ``openhowi naca``."""
+"""Command line interface: ``openhowi gui``, ``slice``, ``shape``, ``wing``, ``send``, ``naca`` and ``airfoils``."""
 
 from __future__ import annotations
 
@@ -35,6 +35,35 @@ def cmd_naca(args: argparse.Namespace) -> int:
     return 0
 
 
+def cmd_airfoils(args: argparse.Namespace) -> int:
+    from . import airfoildb
+
+    if args.export:
+        try:
+            foil = airfoildb.get(args.export)
+        except AirfoilError as exc:
+            return _err(str(exc))
+        if args.output:
+            Path(args.output).write_text(foil.to_dat(), encoding="utf-8")
+            print(f"Wrote {args.output}")
+        else:
+            sys.stdout.write(foil.to_dat())
+        return 0
+    rows = airfoildb.search(" ".join(args.query))
+    if not rows:
+        return _err("no airfoil matches; run `openhowi airfoils` without words for the whole list")
+    category = None
+    for row in rows:
+        if row["category"] != category:
+            category = row["category"]
+            print(f"{category}:")
+        camber = f"camber {row['camber']:4.1f} %" if row["camber"] else "symmetric   "
+        reflex = ", reflexed" if row["reflex"] else ""
+        print(f"  {row['id']:<11}{row['name']:<20}{row['thickness']:5.1f} % thick, {camber}{reflex}  {row['note']}")
+    print("\nUse an id as root_airfoil / tip_airfoil in a job file, or pick it in the app.")
+    return 0
+
+
 def cmd_wing(args: argparse.Namespace) -> int:
     try:
         job = load_wing_job(args.config)
@@ -52,12 +81,13 @@ def cmd_wing(args: argparse.Namespace) -> int:
         ),
         f"sweep {wing.sweep:g} mm, washout {wing.washout:g} deg, kerf root {wing.root_kerf:g} / tip {wing.tip_kerf:g} mm",
     ]
-    from .project import core_comments
+    from .project import bay_comments, core_comments
 
     spec = wing.core_spec()
-    built_up = not spec.plain
+    bays = wing.bay_geometry()
+    built_up = not spec.plain or bool(bays)
     if built_up:
-        comments += core_comments(spec)
+        comments += core_comments(spec) + bay_comments(bays)
     gcode = generate_gcode(toolpath, machine, comments)
     output = Path(args.output or Path(args.config).with_suffix(".gcode").name)
     output.write_text(gcode, encoding="utf-8")
@@ -75,11 +105,20 @@ def cmd_wing(args: argparse.Namespace) -> int:
     if built_up:
         cut = wing.cores()[2]
         print(f"  core ends    {cut['root_te']:.1f} mm (root) / {cut['tip_te']:.1f} mm (tip) before the trailing edge")
+    for bay in bays:
+        print(f"  servo bay {bay.number}  cut by hand: {bay.bay.describe()}, {bay.z0:.1f} mm from the root")
     print(f"Wrote {output}")
 
     if args.svg:
         Path(args.svg).write_text(toolpath_svg(toolpath, machine, job.title), encoding="utf-8")
         print(f"Wrote {args.svg}")
+    if args.bay_template:
+        if not wing.bays:
+            return _err("--bay-template: the job has no [[wing.bays]]")
+        from .template import bay_template_svg
+
+        Path(args.bay_template).write_text(bay_template_svg(wing, job.title), encoding="utf-8")
+        print(f"Wrote {args.bay_template} (print at 100 %)")
     return 0
 
 
@@ -145,7 +184,15 @@ def cmd_slice(args: argparse.Namespace) -> int:
     except (OSError, json.JSONDecodeError, SliceError) as exc:
         return _err(str(exc))
     output = Path(args.output or Path(args.project).name.removesuffix(".json").removesuffix(".howi") + ".gcode")
-    return _report(result, output)
+    code = _report(result, output)
+    if args.bay_template:
+        if result.wing is None or not result.wing.bays:
+            return _err("--bay-template: this project has no servo bays")
+        from .template import bay_template_svg
+
+        Path(args.bay_template).write_text(bay_template_svg(result.wing, str(project.get("title") or "Wing panel")))
+        print(f"Wrote {args.bay_template} (print at 100 %)")
+    return code
 
 
 def _report(result: Any, output: Path) -> int:
@@ -229,6 +276,7 @@ def build_parser() -> argparse.ArgumentParser:
     p = sub.add_parser("slice", help="slice a project saved from the app (.howi.json) to G-code")
     p.add_argument("project")
     p.add_argument("-o", "--output", help="G-code file to write (default: <project name>.gcode)")
+    p.add_argument("--bay-template", metavar="SVG", help="also write the 1:1 servo bay template")
     p.set_defaults(func=cmd_slice)
 
     p = sub.add_parser("shape", help="cut the closed outlines of an SVG or DXF drawing")
@@ -250,6 +298,7 @@ def build_parser() -> argparse.ArgumentParser:
     p.add_argument("config", help="job file, see examples/tapered_wing.toml")
     p.add_argument("-o", "--output", help="G-code file to write (default: <config name>.gcode)")
     p.add_argument("--svg", help="also write an SVG preview of both carriage paths")
+    p.add_argument("--bay-template", metavar="SVG", help="also write the 1:1 servo bay template")
     p.set_defaults(func=cmd_wing)
 
     p = sub.add_parser("send", help="stream a G-code file to a GRBL controller over USB")
@@ -266,6 +315,12 @@ def build_parser() -> argparse.ArgumentParser:
     p.add_argument("-n", "--points", type=int, default=100, help="points per surface")
     p.add_argument("-o", "--output", help="file to write (default: stdout)")
     p.set_defaults(func=cmd_naca)
+
+    p = sub.add_parser("airfoils", help="list or search the built-in airfoil database")
+    p.add_argument("query", nargs="*", help="words to look for, e.g. glider or flying wing")
+    p.add_argument("--export", metavar="ID", help="write that airfoil as a Selig .dat file")
+    p.add_argument("-o", "--output", help="file for --export (default: stdout)")
+    p.set_defaults(func=cmd_airfoils)
     return parser
 
 

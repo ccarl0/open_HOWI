@@ -9,7 +9,7 @@ from pathlib import Path
 from typing import Any
 
 from .airfoil import AirfoilError, load_airfoil
-from .core import Channel, Spar
+from .core import Channel, Joiner, ServoBay, Spar
 from .machine import Machine
 from .toolpath import Placement
 from .wing import WingPanel
@@ -71,7 +71,7 @@ def load_wing_job(path: str | Path) -> WingJob:
             wing_table[key] = load_airfoil(spec, base_dir=path.parent)
         except AirfoilError as exc:
             raise ConfigError(f"[wing] {key}: {exc}") from exc
-    for key, cls in (("spars", Spar), ("channels", Channel)):
+    for key, cls in (("spars", Spar), ("channels", Channel), ("joiners", Joiner), ("bays", ServoBay)):
         items = wing_table.get(key)
         if items is None:
             continue

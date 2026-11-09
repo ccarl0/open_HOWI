@@ -32,7 +32,7 @@ version = { attr = "openhowi.__version__" }
 where = ["src"]
 
 [tool.setuptools.package-data]
-openhowi = ["web/*.html", "web/*.css", "web/*.js", "web/*.svg", "web/vendor/three/*"]
+openhowi = ["web/*.html", "web/*.css", "web/*.js", "web/*.svg", "web/vendor/three/*", "airfoils/*.dat", "airfoils/*.md"]
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]

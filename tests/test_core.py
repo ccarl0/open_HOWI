@@ -101,8 +101,15 @@ def test_root_and_tip_stay_index_matched():
         ({"channels": [Channel(45, 40)]}, "servo channel 1 .* leaves less than 1 mm"),
         ({"te_stock": 10, "channels": [Channel(96, 4)]}, "servo channel 1 .* does not fit"),
         ({"channels": [Channel(40, 8), Channel(43, 8)]}, "servo channel 2 .* too close to servo channel 1"),
-        ({"spars": [Spar(45, 8, 10)], "channels": [Channel(45, 10)]}, "servo channel 1 .* less than 1 mm"),
-        ({"spars": [Spar(45, 8, 0, 2)], "channels": [Channel(45, 4, side="bottom")]}, "overlap"),
+        ({"spars": [Spar(45, 8, 10)], "channels": [Channel(45, 10)]}, "servo channel 1 .* too close to spar 1"),
+        (
+            {"spars": [Spar(45, 8, 0, 2)], "channels": [Channel(45, 4)]},
+            "slit into servo channel 1 .* runs through spar 1",
+        ),
+        (
+            {"channels": [Channel(45, 6, offset=4), Channel(45.5, 4, offset=-5, side="top")]},
+            "runs through servo channel 1",
+        ),
     ],
 )
 def test_core_errors(spec, message):
@@ -128,12 +135,12 @@ def test_servo_channel_cut_path():
     runs = core_runs(FOIL, 250, CoreSpec(channels=[channel]))
     pts, tags = materialize(runs, run_counts(runs, 80))
     entry = pts[tags["channel1"]]
-    (geom,) = runs.channels
+    (geom,) = runs.holes
     assert entry[0] == pytest.approx(112.5)  # on the lower surface, straight below the centre
     assert entry[1] == pytest.approx(y_at(pts, 112.5, False), abs=1e-6)
     assert geom.center[0] == pytest.approx(112.5)
     assert geom.center[1] == pytest.approx((y_at(pts, 112.5, True) + y_at(pts, 112.5, False)) / 2 + 1, abs=0.05)
-    path = cut_path(pts, [(tags["channel1"], geom.center, geom.radius)], kerf=1.0)
+    path = cut_path(pts, [(tags["channel1"], geom.center, geom.shape)], kerf=1.0)
     i = tags["channel1"]
     detour = path[i + 1 : i + 2 + CIRCLE_POINTS]
     for q in detour:  # the wire runs half a kerf inside the finished channel
@@ -145,9 +152,9 @@ def test_servo_channel_cut_path():
 def test_channel_narrower_than_kerf():
     runs = core_runs(FOIL, 250, CoreSpec(channels=[Channel(45, 1.0)]))
     pts, tags = materialize(runs, run_counts(runs, 80))
-    (geom,) = runs.channels
+    (geom,) = runs.holes
     with pytest.raises(CoreError, match="narrower than the 1.2 mm kerf"):
-        cut_path(pts, [(tags["channel1"], geom.center, geom.radius)], kerf=1.2)
+        cut_path(pts, [(tags["channel1"], geom.center, geom.shape)], kerf=1.2)
 
 
 def test_core_spec_validation():

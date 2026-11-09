@@ -1,6 +1,6 @@
-# A sheeted wing core: 1.5 mm balsa skins, balsa LE and TE strips, two carbon spars
-# and a servo-lead channel.
-#   openhowi wing examples/sheeted_wing.toml --svg preview.svg
+# A sheeted wing core: 1.5 mm balsa skins, balsa LE and TE strips, two carbon spars,
+# a servo-lead channel, a joiner tube and a servo bay.
+#   openhowi wing examples/sheeted_wing.toml --svg preview.svg --bay-template bays.svg
 # All lengths in mm, speeds in mm/min, angles in degrees.
 
 title = "Sheeted wing core"
@@ -13,7 +13,7 @@ cut_feed = 180.0
 travel_feed = 600.0
 
 [wing]
-root_airfoil = "naca2412"
+root_airfoil = "sd7062"     # a NACA code, an id from `openhowi airfoils`, or a .dat file
 root_chord = 240.0
 tip_chord = 170.0
 span = 600.0
@@ -47,6 +47,24 @@ depth_top = 1.0
 position = 45.0
 diameter = 8.0
 offset = 0.0                # up from the middle of the core
+side = "bottom"
+
+# Joiner tube: a straight 10 mm hole through the whole panel, square to the root face
+[[wing.joiners]]
+position = 33.0             # % of the root chord
+shape = "round"             # or "rect" with width (along the chord) and height for a blade
+diameter = 10.0
+side = "bottom"             # slit from the bottom surface
+# position_tip = 33.0       # where it leaves the tip, % of the tip chord (default: square to the root)
+# dihedral = 4.0            # total dihedral for a straight joiner: the hole runs down by half of it
+
+# Servo bay: the wire cannot cut it (it stops short of root and tip); --bay-template prints a 1:1 template
+[[wing.bays]]
+station = 300.0             # centre, mm from the root face
+position = 48.0             # centre, % of the local chord
+length = 30.0               # along the span
+width = 14.0                # along the chord
+depth = 10.0                # below the core surface
 side = "bottom"
 
 [placement]

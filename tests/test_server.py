@@ -139,3 +139,22 @@ def test_part_types_and_shape_inspect(app):
             "/api/shapes/inspect",
             {"filename": "empty.svg", "data": '<svg xmlns="http://www.w3.org/2000/svg"/>'},
         )
+
+
+def test_airfoil_database_endpoints(app):
+    listing = app.handle("GET", "/api/airfoils", {})
+    assert any(a["id"] == "sd7037" for a in listing["database"])
+    assert "outline" not in listing["database"][0]
+    db = app.handle("GET", "/api/airfoils/database", {})
+    assert db["categories"][0] == "Trainer & sport" and len(db["airfoils"][0]["outline"]) > 20
+    shape = app.handle("POST", "/api/airfoil/shape", {"source": "e387"})
+    assert shape["name"] == "Eppler E387"
+
+
+def test_bay_template_endpoint(app):
+    project = default_project()
+    project["part"]["bays"] = [{"station": 300, "position": 45, "length": 30, "width": 14, "depth": 8}]
+    result = app.handle("POST", "/api/template/bays", {"project": project})
+    assert result["filename"].endswith("-servo-bays.svg") and result["svg"].startswith("<svg")
+    with pytest.raises(ApiError, match="no servo bays"):
+        app.handle("POST", "/api/template/bays", {"project": default_project()})

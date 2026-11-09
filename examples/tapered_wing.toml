@@ -16,7 +16,7 @@ wire_power = 600            # S value for M3 (wire heat); remove to switch the w
 preheat = 3.0               # seconds to let the wire heat up before moving
 
 [wing]
-root_airfoil = "naca2412"   # "nacaXXXX" or a path to a Selig/Lednicer .dat file
+root_airfoil = "naca2412"   # "nacaXXXX", an id from `openhowi airfoils` (e.g. "sd7037"), or a Selig/Lednicer .dat file
 tip_airfoil = "naca2410"
 root_chord = 250.0
 tip_chord = 160.0
