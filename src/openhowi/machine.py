@@ -36,12 +36,22 @@ class Machine:
     preheat: float = 0.0
     """Seconds to dwell after switching the wire on, before moving."""
     decimals: int = 3
+    rotary_axis: str = ""
+    """G-code letter of a rotary axis (spinning table) turning the foam about a line along X, or ""."""
+    rotary_height: float = 0.0
+    """Machine Y of the rotary axis (mm)."""
 
     def __post_init__(self) -> None:
         letters = self.axis_letters.upper()
         if len(letters) != 4 or len(set(letters)) != 4 or not set(letters) <= set(AXIS_WORDS):
             raise ValueError(f"axis_letters must be 4 distinct letters from {AXIS_WORDS}, got {self.axis_letters!r}")
         object.__setattr__(self, "axis_letters", letters)
+        rotary = (self.rotary_axis or "").strip().upper()
+        if rotary and (len(rotary) != 1 or rotary not in AXIS_WORDS or rotary in letters):
+            raise ValueError(f"rotary_axis must be one letter from {AXIS_WORDS} not used by the carriages, or blank")
+        object.__setattr__(self, "rotary_axis", rotary)
+        if self.rotary_height < 0:
+            raise ValueError("rotary_height must be >= 0")
         for name in ("tower_distance", "x_travel", "y_travel", "cut_feed", "travel_feed"):
             if getattr(self, name) <= 0:
                 raise ValueError(f"{name} must be > 0")

@@ -29,6 +29,16 @@ class Move:
 
 
 @dataclass(frozen=True)
+class Stop:
+    """A break in a job, before move ``index``: a pause for the operator, or a turn of the rotary axis."""
+
+    index: int
+    message: str
+    rotate: float | None = None
+    """Rotary axis angle to turn to (degrees, absolute). None: pause (M0) for the operator."""
+
+
+@dataclass(frozen=True)
 class Toolpath:
     moves: tuple[Move, ...]
     start: tuple[Point, Point] = ((0.0, 0.0), (0.0, 0.0))
@@ -36,6 +46,8 @@ class Toolpath:
     foam_span: tuple[float, float] | None = None
     """Span positions (from the XY carriage) of the ends of the foam. While cutting, the
     wire moves at the cut feed at whichever end moves faster. ``None``: limit the carriages."""
+    stops: tuple[Stop, ...] = ()
+    """Pauses for the operator (e.g. to turn the foam) or rotary-axis turns, in order."""
 
     def extents(self) -> dict[str, tuple[float, float, float, float]]:
         """``{"XY": (xmin, ymin, xmax, ymax), "UV": (...)}`` including the start point."""

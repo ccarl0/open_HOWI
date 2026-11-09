@@ -433,7 +433,8 @@ function fieldEl(f, value, set, showHelp) {
   if (f.type === 'select') {
     input = el('select', { id });
     for (const [v, label] of f.options) input.append(new Option(label, v, false, v === value));
-    input.addEventListener('change', () => set(input.value));
+    const numeric = typeof f.options[0]?.[0] === 'number';
+    input.addEventListener('change', () => set(numeric ? Number(input.value) : input.value));
   } else if (f.type === 'airfoil') {
     input = airfoilInput(id, f, value, set);
   } else if (f.type === 'drawing') {
@@ -674,6 +675,7 @@ function renderResult() {
   $('#bay-row').hidden = !hasBays;
   $('#legend-bay').hidden = !hasBays;
   $('#legend-ghost').hidden = !(r.part.ghosts || []).length;
+  $('#legend-ghost-text').textContent = r.part.ghost_label || 'Finished shape';
   renderJobs(r);
 
   const b = r.block;
@@ -704,9 +706,25 @@ function renderJobs(r) {
   const current = r ? r.job : Number($('#sel-job').value || 1);
   $('#steps-card').hidden = !(notes.length || fuselage);
   $('#steps-pill').textContent = jobs.length > 1 ? `cut ${current} of ${jobs.length}` : '';
-  $('#job-notes').replaceChildren(...notes.map((n) => el('li', {}, n)));
+  $('#steps-pill').hidden = jobs.length < 2;
+  // Illustrated steps: when they carry their own notes they say everything; otherwise the
+  // job's notes come first and the drawings follow.
+  const steps = (r && r.steps) || [];
+  const narrated = steps.some((st) => (st.notes || []).length);
+  $('#job-notes').replaceChildren(...(narrated ? [] : notes.map((n) => el('li', {}, n))));
+  $('#job-notes').hidden = narrated || !notes.length;
+  $('#job-steps').replaceChildren(...steps.map((st) => {
+    const box = el('div', { class: 'step' });
+    if (st.title) box.append(el('h3', {}, st.title));
+    if (st.svg) {
+      const doc = new DOMParser().parseFromString(st.svg, 'image/svg+xml');
+      if (doc.documentElement.nodeName === 'svg') box.append(document.importNode(doc.documentElement, true));
+    }
+    if ((st.notes || []).length) box.append(el('ul', {}, ...st.notes.map((n) => el('li', {}, n))));
+    return box;
+  }));
   $('#btn-export-all').hidden = jobs.length < 2;
-  $('#btn-plans').hidden = !fuselage;
+  for (const id of ['#btn-plans', '#btn-guide', '#btn-stl']) $(id).hidden = !fuselage;
 }
 
 async function exportAllCuts() {
@@ -868,6 +886,13 @@ function renderDevice() {
     const extra = job.error ? ` — ${job.error}` : '';
     $('#job-hint').textContent = `${job.name}: ${job.acked}/${job.total} lines, ${clock(job.elapsed || 0)} elapsed${extra}`;
   }
+  // A pause written into the job (e.g. "turn the foam"): say what to do, then Resume.
+  const prompt = job && job.state === 'paused' && job.message;
+  const box = $('#job-prompt');
+  const appeared = prompt && (box.hidden || $('#job-prompt-text').textContent !== job.message);
+  box.hidden = !prompt;
+  if (prompt) $('#job-prompt-text').textContent = job.message;
+  if (appeared && state.tab === 'device') box.scrollIntoView({ block: 'nearest', behavior: 'smooth' });
   const idle = d.connected && d.ready && s === 'Idle' && !active;
   $('#btn-start').disabled = !(idle && state.result);
   $('#btn-pause').disabled = !(active && job.state !== 'paused');
@@ -923,7 +948,7 @@ function startCurrentJob() {
   const r = state.result;
   if (!r) return;
   const b = r.block;
-  startJob(r.gcode, state.project.title || (partType() === 'wing' ? 'Wing panel' : '2D shape'),
+  startJob(r.gcode, state.project.title || { wing: 'Wing panel', shape: '2D shape', fuselage: 'Fuselage' }[partType()],
     `Estimated time ${fmtTime(r.stats.time_s)}. Foam ${num(b.x1 - b.x0, 0)} × ${num(b.y1 - b.y0, 0)} × `
     + `${num(b.z1 - b.z0, 0)} mm, rear face before X ${num(state.project.placement.x_margin, 0)} mm.`);
 }
@@ -996,6 +1021,31 @@ function wire() {
     changed();
   });
   $('#btn-export-all').addEventListener('click', exportAllCuts);
+  $('#btn-guide').addEventListener('click', async () => {
+    const tab = window.open('', '_blank');  // open now, while the click still counts as the user's
+    try {
+      const r = await api('/api/guide/fuselage', { project: state.project });
+      const url = URL.createObjectURL(new Blob([r.html], { type: 'text/html' }));
+      if (tab) tab.location.href = url;
+      else download(r.filename.replace(/[^\w.-]+/g, '-'), r.html, 'text/html');
+      setTimeout(() => URL.revokeObjectURL(url), 60000);
+    } catch (err) {
+      if (tab) tab.close();
+      alert(err.message);
+    }
+  });
+  $('#btn-stl').addEventListener('click', async () => {
+    try {
+      const r = await api('/api/export/fuselage-stl', { project: state.project });
+      const bytes = Uint8Array.from(atob(r.stl), (c) => c.charCodeAt(0));
+      const url = URL.createObjectURL(new Blob([bytes], { type: 'model/stl' }));
+      const a = el('a', { href: url, download: r.filename.replace(/[^\w.-]+/g, '-') });
+      document.body.append(a); a.click(); a.remove();
+      setTimeout(() => URL.revokeObjectURL(url), 1000);
+    } catch (err) {
+      alert(err.message);
+    }
+  });
   $('#btn-plans').addEventListener('click', async () => {
     try {
       const r = await api('/api/template/fuselage', { project: state.project });

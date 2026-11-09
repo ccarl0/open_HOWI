@@ -23,7 +23,7 @@ from dataclasses import dataclass
 
 from .geometry import Point, distance
 from .machine import Machine
-from .toolpath import Toolpath
+from .toolpath import Stop, Toolpath
 
 
 def fmt(value: float, decimals: int) -> str:
@@ -66,6 +66,8 @@ class Segment:
     """Length (mm) that moves at ``feed``: the faster foam end while cutting, else the farther carriage."""
     feed: float
     cutting: bool
+    index: int = 0
+    """Index of the toolpath move this segment comes from."""
 
     @property
     def minutes(self) -> float:
@@ -79,7 +81,7 @@ def segments(toolpath: Toolpath, machine: Machine) -> Iterator[Segment]:
         return (round(p[0], machine.decimals), round(p[1], machine.decimals))
 
     pos_xy, pos_uv = rnd(toolpath.start[0]), rnd(toolpath.start[1])
-    for move in toolpath.moves:
+    for index, move in enumerate(toolpath.moves):
         xy, uv = rnd(move.xy), rnd(move.uv)
         d_xy, d_uv = distance(pos_xy, xy), distance(pos_uv, uv)
         if max(d_xy, d_uv) == 0.0:
@@ -92,7 +94,7 @@ def segments(toolpath: Toolpath, machine: Machine) -> Iterator[Segment]:
         else:
             drive = max(d_xy, d_uv)
         feed = (machine.cut_feed if move.cutting else machine.travel_feed) * move.feed_scale
-        yield Segment(xy, uv, d_xy, d_uv, drive, feed, move.cutting)
+        yield Segment(xy, uv, d_xy, d_uv, drive, feed, move.cutting, index)
         pos_xy, pos_uv = xy, uv
 
 
@@ -115,8 +117,13 @@ def generate_gcode(toolpath: Toolpath, machine: Machine, comments: Iterable[str]
     def coords(xy: Point, uv: Point) -> str:
         return f"{a[0]}{fmt(xy[0], dec)} {a[1]}{fmt(xy[1], dec)} {a[2]}{fmt(uv[0], dec)} {a[3]}{fmt(uv[1], dec)}"
 
+    turns = any(stop.rotate is not None for stop in toolpath.stops)
+    if turns and not machine.rotary_axis:
+        raise ValueError("this job turns a rotary axis, but the machine has none")
     lines = [_comment("open_HOWI hot-wire G-code")]
     lines += [_comment(c) for c in comments]
+    if turns:
+        lines.append(_comment(f"rotary axis {machine.rotary_axis} must read 0 deg at the start"))
     lines += [
         _comment(
             f"{a[0]}{a[1]} carriage at span 0, {a[2]}{a[3]} carriage at span {fmt(machine.tower_distance, dec)} mm"
@@ -134,12 +141,37 @@ def generate_gcode(toolpath: Toolpath, machine: Machine, comments: Iterable[str]
     else:
         lines.append(_comment("switch the wire heat on now"))
 
+    stops = list(toolpath.stops)
+    rotary = machine.rotary_axis
+
+    def stop_block(stop: Stop) -> list[str]:
+        if stop.rotate is not None:
+            return [_comment(stop.message), f"G0 {rotary}{fmt(stop.rotate, 3)}"]
+        message = stop.message
+        if machine.wire_power is None:
+            message += " Switch the wire off first, and on again before resuming."
+        block = [_comment(f"PAUSE: {message}")]
+        if machine.wire_power is not None:
+            block.append("M5")
+        block.append("M0")
+        if machine.wire_power is not None:
+            block.append(f"M3 S{fmt(machine.wire_power, 2)}")
+            if machine.preheat > 0:
+                block.append(f"G4 P{fmt(machine.preheat, 2)}")
+        return block
+
     for seg in segments(toolpath, machine):
+        while stops and seg.index >= stops[0].index:
+            lines += stop_block(stops.pop(0))
         feed = segment_feed(seg.d_xy, seg.d_uv, seg.feed, machine.feed_mode, seg.drive)
         lines.append(f"G1 {coords(seg.xy, seg.uv)} F{fmt(feed, f_dec)}")
+    for stop in stops:
+        lines += stop_block(stop)
 
     if machine.wire_power is not None:
         lines.append("M5")
+    if turns:
+        lines.append(f"G0 {rotary}0")
     if inverse:
         lines.append("G94")
     lines.append("M2")

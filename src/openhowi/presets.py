@@ -27,7 +27,17 @@ KINDS = ("machine", "material")
 
 # Machine preset keys that are not part of the Machine dataclass.
 MACHINE_EXTRA = {"baud": 115200}
-MACHINE_KEYS = ("tower_distance", "x_travel", "y_travel", "axis_letters", "travel_feed", "feed_mode", "decimals")
+MACHINE_KEYS = (
+    "tower_distance",
+    "x_travel",
+    "y_travel",
+    "axis_letters",
+    "travel_feed",
+    "feed_mode",
+    "decimals",
+    "rotary_axis",
+    "rotary_height",
+)
 
 MACHINE_FIELDS: list[dict[str, Any]] = [
     {"key": "tower_distance", "label": "Distance between carriages", "unit": "mm", "type": "number", "min": 1,
@@ -42,6 +52,11 @@ MACHINE_FIELDS: list[dict[str, Any]] = [
      "options": [["inverse-time", "Inverse time (G93)"], ["units-per-minute", "Units per minute (G94)"]],
      "help": "G93 works the same on every controller. Use G94 only if yours lacks G93."},
     {"key": "decimals", "label": "Coordinate decimals", "type": "number", "min": 0, "max": 6, "step": 1},
+    {"key": "rotary_axis", "label": "Rotary axis letter", "type": "text",
+     "help": "A spinning table turning the foam about a line along X (e.g. A). Blank: none; turned fuselages "
+             "are then rolled by hand on a jig."},
+    {"key": "rotary_height", "label": "Rotary axis height", "unit": "mm", "type": "number", "min": 0,
+     "help": "Machine Y of the rotary axis."},
     {"key": "baud", "label": "Serial baud rate", "type": "number", "min": 1200, "step": 1},
 ]  # fmt: skip
 

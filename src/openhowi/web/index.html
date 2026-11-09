@@ -44,7 +44,7 @@
         <span><i class="sw wire"></i>Wire</span>
         <span><i class="sw part"></i>Part</span>
         <span id="legend-bay" hidden><i class="sw bay"></i>Servo bay (cut by hand)</span>
-        <span id="legend-ghost" hidden><i class="sw ghost"></i>Finished shape (after sanding)</span>
+        <span id="legend-ghost" hidden><i class="sw ghost"></i><span id="legend-ghost-text">Finished shape</span></span>
       </div>
       <div class="banner" id="banner" hidden></div>
       <div class="busy" id="busy" hidden>Slicing…</div>
@@ -103,9 +103,12 @@
         <section class="card" id="steps-card" hidden>
           <h2>Cutting steps <span class="pill" id="steps-pill"></span></h2>
           <ol class="steps" id="job-notes"></ol>
+          <div class="step-list" id="job-steps"></div>
           <div class="row wrap">
+            <button id="btn-guide" class="primary">Print cutting guide</button>
             <button id="btn-export-all">Export all cuts</button>
             <button id="btn-plans">Plans &amp; formers (SVG)</button>
+            <button id="btn-stl">3D model (STL)</button>
           </div>
         </section>
         <section class="card">
@@ -175,6 +178,11 @@
           <h2>Job <span class="pill" id="job-pill">No job</span></h2>
           <div class="progress"><div id="job-bar"></div></div>
           <p class="hint" id="job-hint">Slice a part, then start it here.</p>
+          <div class="job-prompt" id="job-prompt" hidden role="alert">
+            <b>Waiting for you</b>
+            <span id="job-prompt-text"></span>
+            <span class="hint">Press Resume when done.</span>
+          </div>
           <div class="row">
             <button id="btn-start" class="primary">Start</button>
             <button id="btn-pause">Pause</button>

@@ -45,6 +45,7 @@ from .project import (
     bay_template,
     default_project,
     fuselage_plans,
+    fuselage_stl,
     inspect_drawing,
     resolve_airfoil,
     slice_project,
@@ -86,6 +87,8 @@ class App:
             ("POST", "/api/slice"): self.slice,
             ("POST", "/api/template/bays"): self.bays_template,
             ("POST", "/api/template/fuselage"): self.fuselage_template,
+            ("POST", "/api/guide/fuselage"): self.fuselage_guide,
+            ("POST", "/api/export/fuselage-stl"): self.fuselage_model,
             ("POST", "/api/calibration/kerf"): self.kerf_test,
             ("GET", "/api/device/ports"): lambda q: {"ports": list_ports()},
             ("GET", "/api/device/state"): self.device_state,
@@ -179,6 +182,18 @@ class App:
     def fuselage_template(self, body: dict[str, Any]) -> dict[str, Any]:
         name, svg = fuselage_plans(body.get("project") or {})
         return {"filename": name, "svg": svg}
+
+    def fuselage_guide(self, body: dict[str, Any]) -> dict[str, Any]:
+        from .guide import cutting_guide_html
+
+        name, html = cutting_guide_html(body.get("project") or {})
+        return {"filename": name, "html": html}
+
+    def fuselage_model(self, body: dict[str, Any]) -> dict[str, Any]:
+        import base64
+
+        name, data = fuselage_stl(body.get("project") or {})
+        return {"filename": name, "stl": base64.b64encode(data).decode("ascii")}
 
     def slice(self, body: dict[str, Any]) -> dict[str, Any]:
         result = slice_project(body.get("project") or {})

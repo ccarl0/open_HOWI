@@ -3,7 +3,7 @@
 
 It speaks the serial protocol closely enough to try the whole app (and run the
 tests) without a machine: ``ok`` once a line enters the planner, ``error:``
-codes, status reports, feed hold / resume / soft reset, jogging, ``G10 L20``
+codes, status reports, feed hold / resume / soft reset, ``M0`` program pauses, jogging, ``G10 L20``
 work offsets and timed motion (optionally sped up).
 """
 
@@ -29,6 +29,8 @@ class _Block:
     feed: float
     jog: bool = False
     wire: bool | None = None
+    pause: bool = False
+    """M0: hold here until cycle start."""
 
 
 class SimulatedGrbl:
@@ -142,7 +144,8 @@ class SimulatedGrbl:
 
     def _cycle_start(self) -> None:
         if self.state == "Hold" and self._hold_t0 is not None:
-            self._block_t0 += self._clock() - self._hold_t0
+            now = self._clock()
+            self._block_t0 += now - self._hold_t0
             self._hold_t0 = None
             self.state = "Run" if self._planner else "Idle"
 
@@ -180,6 +183,11 @@ class SimulatedGrbl:
             now = self._clock()
             while self._planner:
                 block = self._planner[0]
+                if block.pause:  # M0: everything before it has finished; hold until cycle start
+                    self._planner.popleft()
+                    self._hold_t0 = self._block_t0
+                    self.state = "Hold"
+                    break
                 end = self._block_t0 + block.duration / self.speedup
                 if now < end:
                     break
@@ -267,6 +275,8 @@ class SimulatedGrbl:
             elif code in (2, 30):
                 self._queue_wire(False)
                 self._reset_modal()
+            elif code == 0:
+                self._queue(_Block(None, 0.0, 0.0, pause=True))
             else:
                 return "error:20"
 

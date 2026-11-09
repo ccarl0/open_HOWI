@@ -34,7 +34,7 @@ the `openhowi` process. It works offline.
 |---|---|
 | **Prepare** | Choose a **machine** and a **material** preset, then set up the part: a **wing panel** (root/tip airfoils from the built-in database, NACA or any `.dat` file, chords, span, sweep, washout, sheeting allowance, LE/TE stock, spar slots, servo channels, joiner holes and servo bays), a **fuselage** (stations or side/top drawings, cut in two views or as rounded lengthwise segments) or a **2D shape** from a DXF or SVG drawing. The part, the foam block and both carriage paths update live in 3D as you type. |
 | **Preview** | Estimated time, cut lengths, kerf at each end, peak carriage speeds, the foam block you need and where to put it. Scrub or play back the cut with the timeline. Export G-code. |
-| **Device** | Connect over USB (or to the built-in **simulator**), live position, jog both carriages together or separately, home, unlock, set zero, wire on/off, start/pause/resume/stop the job, console. A **STOP** button (feed hold + reset, wire off) stays in the top bar while connected. |
+| **Device** | Connect over USB (or to the built-in **simulator**), live position, jog both carriages together or separately, home, unlock, set zero, wire on/off, start/pause/resume/stop the job, console. When a job stops for you (e.g. to turn the foam), it says what to do; press Resume. A **STOP** button (feed hold + reset, wire off) stays in the top bar while connected. |
 
 ![Device tab: a job running on the simulator](docs/device.png)
 
@@ -145,13 +145,22 @@ the lines run smoothly without overshooting.
 
 ![Fuselage, pass 1 of the two-view cut: the side-view slab with the finished fuselage inside](docs/fuselage.png)
 
-Two ways to cut it (pick the cut to slice in the selector above *Export G-code*; *Export all cuts*
-writes one G-code file per cut, and *Preview → Cutting steps* says how to set up each one):
+Three ways to cut it (pick the cut to slice in the selector above *Export G-code*; *Export all cuts*
+writes one G-code file per cut, and *Preview → Cutting steps* shows, with drawings, how to set up and
+turn the foam for each one):
 
 - **Two views** (two passes). Pass 1 cuts the side view's top and bottom lines from one end of the
   block to the other, so the slab keeps the block's flat end faces; for pass 2 it lies on its side
   against the same stop and the top view is cut out. Round the corners off by hand, checking with
   the formers.
+- **Turned** (4 to 32 passes). The block is turned about the fuselage's axis between passes, and every
+  pass cuts the fuselage's outline as seen from that side, so 8 passes leave an octagonal fuselage and
+  16 passes one with corners under a millimetre to sand. **Without a spinning table** the block is
+  screwed between two polygon end plates (template in the cutting guide) and rolled by hand onto the
+  next edge: the job pauses with the wire off and the Device tab says "roll the block onto edge 3"; press
+  Resume. **With a spinning table** set the machine preset's *Rotary axis letter* (e.g. `A`, a rotary
+  turning the foam about a line along X) and *Rotary axis height*: the G-code turns it between passes
+  (`G0 A45`) without stopping. The turning direction does not matter, as the fuselage is symmetric.
 - **Lengthwise segments.** The wire runs along the fuselage and every segment (up to the length you
   set) is a ruled surface between its two end sections, like a wing panel, so the sections come out
   **rounded**. Segments can be **hollow** (a wall thickness; a full segment is reached through a slit
@@ -165,8 +174,17 @@ writes one G-code file per cut, and *Preview → Cutting steps* says how to set 
   height and incidence, on top (high wing) or underneath (low wing): the fuselage's top or bottom
   line takes the airfoil's shape there, and the formers under the wing stop at it.
 - **Plans & formers** (*Preview*, or `openhowi slice … --plans plans.svg`): a 1:1 SVG with the side
-  and top views, the datum, the stations, the wing, and every former (drawn inside the planking
-  thickness you give), with a 50 mm check bar.
+  and top views, the datum, the stations, the wing, every former (drawn inside the planking
+  thickness you give) and the jig plates, with a 50 mm check bar.
+- **Print cutting guide** (*Preview*, or `--guide guide.html`): one page to print with every cut's
+  drawings and steps in order (where the foam goes, which edge goes down next), then the jig plates
+  and formers at 1:1 and the views reduced. It prints true to size at 100 %.
+- **3D model (STL)** (*Preview*, or `--stl fuselage.stl`): the finished fuselage as a closed mesh, to 3D
+  print it (or a mould plug) or take it into CAD.
+
+![Cutting steps for a turned fuselage: the jig, the passes and which edge goes down](docs/fuselage-turned.png)
+
+![The printable cutting guide: summary, illustrated passes, and the jig plate at 1:1](docs/cutting-guide.png)
 
 ![Fuselage plans: side and top views with stations and the wing saddle, and the formers](docs/fuselage-plans.png)
 
@@ -232,7 +250,8 @@ way. Switch the machine preset to *Units per minute (G94)* only if yours lacks G
 
 ```bash
 openhowi slice my-wing.howi.json -o my-wing.gcode   # slice a project saved from the app
-openhowi slice examples/sport_fuselage.howi.json --plans plans.svg   # one G-code file per cut, plus 1:1 plans
+openhowi slice examples/sport_fuselage.howi.json --plans plans.svg --guide guide.html --stl fuse.stl
+                                                     # one G-code file per cut, 1:1 plans, printable guide, 3D model
 openhowi shape former.svg --span 80 --material "XPS extruded (blue/pink)"   # cut a DXF/SVG drawing
 openhowi wing examples/tapered_wing.toml --svg wing.svg   # TOML job file, explicit kerf values
 openhowi wing examples/sheeted_wing.toml --bay-template bays.svg   # built-up core + 1:1 servo bay template
@@ -259,7 +278,7 @@ openhowi naca 2412 -o naca2412.dat                   # write a NACA 4-digit airf
 - Wing-root dowel and hold-down holes on the template; cutting short joiner holes with a heated tube
 - Homing/limit-aware placement and a block-size optimiser
 - Fuselages: sections from drawn formers (lofts between two different drawings), fin slots and hatch lines
-- Rotary-table (5th axis) support for fully round bodies (spinners, round fuselages)
+- Continuous rotary (lathe-style) cutting for bodies of revolution such as spinners
 - Packaged desktop builds (one-click install on Windows/macOS)
 
 ## Development
@@ -274,7 +293,8 @@ ruff check src tests && ruff format --check src tests
 |---|---|
 | `airfoil`, `airfoildb`, `geometry`, `wing`, `core` | Airfoil parsing/generation and the airfoil database, 2D geometry, wing sections with sheeting, stock, slots, channels, joiners and servo bays |
 | `svgimport`, `dxfimport`, `curves`, `shapes` | Drawing import, curve flattening, outlines/holes, kerf and cut planning for 2D shapes |
-| `fuselage`, `fusecut` | Fuselage stations/views, rounded sections and saddles; two-view passes and lengthwise segments |
+| `fuselage`, `fusecut` | Fuselage stations/views, rounded sections, saddles, STL; two-view, turned and lengthwise cuts |
+| `diagrams`, `guide` | Step drawings (how the foam sits and turns) and the printable cutting guide |
 | `toolpath`, `gcode` | Placement, the 4-axis projection, feed timing and G-code output |
 | `material`, `presets`, `project`, `calibration`, `template` | Slicer layer: presets, kerf model, project slicing, kerf test, servo bay template and fuselage plans |
 | `simulator`, `controller`, `sender` | Simulated GRBL, the threaded device controller, the CLI streamer |

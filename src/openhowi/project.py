@@ -239,9 +239,23 @@ FUSELAGE_FIELDS: list[dict[str, Any]] = [
      "default_item": {"airfoil": "naca2412", "position": 120.0, "chord": 200.0, "height": 45.0, "incidence": 0.0,
                       "side": "top"}},
     {"key": "method", "label": "Cut as", "type": "select", "group": "Cut",
-     "options": [["two_view", "two views: side, then top"], ["segments", "lengthwise segments (rounded)"]],
-     "help": "Two views: two passes, then round the corners by hand. Segments: the wire runs along the "
-             "fuselage and cuts rounded sections; glue the segments together."},
+     "options": [["two_view", "two views: side, then top"], ["turned", "turned: N passes round it"],
+                 ["segments", "lengthwise segments (rounded)"]],
+     "help": "Two views: two passes, then round the corners by hand. Turned: the block turns about the fuselage "
+             "between passes (by hand on a jig, or on a rotary axis) for an N-sided fuselage. Segments: the wire "
+             "runs along the fuselage and cuts rounded sections; glue the segments together."},
+    {"key": "facets", "label": "Passes (sides)", "type": "select", "group": "Cut", "show_if": {"method": "turned"},
+     "options": [[n, f"{n} passes, {n}-sided"] for n in (4, 6, 8, 12, 16, 24, 32)],
+     "help": "More passes leave a rounder fuselage and less to sand."},
+    {"key": "plate", "label": "Jig plate thickness", "unit": "mm", "type": "number", "min": 0, "step": 0.5,
+     "group": "Cut", "show_if": {"method": "turned"},
+     "help": "The two end plates the block is rolled on. Not used on a machine with a rotary axis."},
+    {"key": "hold", "label": "Foam kept round the axis", "unit": "mm", "type": "number", "min": 1, "step": 0.5,
+     "group": "Cut", "show_if": {"method": "turned"},
+     "help": "So the fuselage stays joined to the end stubs until the last pass."},
+    {"key": "axis", "label": "Turning axis height", "unit": "mm", "type": "number", "optional": True, "step": 0.5,
+     "group": "Cut", "show_if": {"method": "turned"},
+     "help": "Above the datum. Blank: the height that stays deepest inside the fuselage."},
     {"key": "segment_length", "label": "Longest segment", "unit": "mm", "type": "number", "min": 10,
      "group": "Cut", "show_if": {"method": "segments"}},
     {"key": "halves", "label": "Left and right halves", "type": "bool", "group": "Cut",
@@ -344,6 +358,10 @@ DEFAULT_PARTS["fuselage"] = {
     "spare": 5.0,
     "skin": 0.0,
     "points": 64,
+    "facets": 8,
+    "plate": 6.0,
+    "hold": 5.0,
+    "axis": None,
     "job": 1,
     "kerf_root_override": None,
     "kerf_tip_override": None,
@@ -430,6 +448,10 @@ class _Part:
     """Finished shapes to show faintly in 3D, as rings to loft."""
     block: dict[str, float] | None = None
     """The foam block, when the part type knows it better than the outline's bounds."""
+    steps: list[dict[str, Any]] = field(default_factory=list)
+    """Illustrated steps for this cut: {"title", "notes", "svg"}."""
+    ghost_label: str = ""
+    jig: dict[str, float] | None = None
 
 
 def _r(v: float) -> float:
@@ -908,7 +930,10 @@ def _finish(
                 for z0, z1, a, b in built.bays
             ],
             "ghosts": [[[[_r(c) for c in p] for p in ring] for ring in ghost] for ghost in built.ghosts],
+            "ghost_label": built.ghost_label,
         },
+        "steps": built.steps,
+        "jig": built.jig,
         "jobs": [{"label": label} for label in built.jobs],
         "job": built.job,
         "notes": built.notes,
@@ -1007,6 +1032,10 @@ def _fuselage_part(part: dict[str, Any], machine: Machine, material: Material, p
             wall=_number(part, "wall", 0.0) or 0.0,
             spare=_number(part, "spare", 5.0) or 5.0,
             points=int(_number(part, "points", 64) or 64),
+            facets=int(_number(part, "facets", 8) or 8),
+            plate=_number(part, "plate", 6.0) or 0.0,
+            hold=_number(part, "hold", 5.0) or 5.0,
+            axis=_number(part, "axis", None),
         )
         labels = job_labels(fuse, options)
         job = min(max(int(_number(part, "job", 1) or 1), 1), len(labels))
@@ -1043,7 +1072,9 @@ def _fuselage_part(part: dict[str, Any], machine: Machine, material: Material, p
             views.append({"label": f"{name} · {x:.0f} mm", "rings": rings})
     else:
         views.append({"label": f"Section · {widest:.0f} mm", "rings": [fuse.section(widest, 64)]})
-    method = "two views" if options.method == "two_view" else "lengthwise segments"
+    method = {"two_view": "two views", "turned": f"turned, {options.facets} passes", "segments": "lengthwise segments"}[
+        options.method
+    ]
     return _Part(
         toolpath=cut.toolpath,
         z_root=cut.z_root,
@@ -1085,6 +1116,9 @@ def _fuselage_part(part: dict[str, Any], machine: Machine, material: Material, p
         views=views,
         ghosts=[cut.ghost] if cut.ghost else [],
         block=cut.block,
+        steps=cut.steps,
+        ghost_label=cut.ghost_label,
+        jig=cut.jig,
     )
 
 
@@ -1099,8 +1133,21 @@ def fuselage_plans(project: dict[str, Any]) -> tuple[str, str]:
     title = str(project.get("title") or "Fuselage")
     skin = _number(part, "skin", 0.0) or 0.0
     spacing = _number(part, "segment_length", 150.0) or 150.0
+    jig = slice_project(project).data.get("jig") if part.get("method") == "turned" else None
     try:
-        svg = fuselage_plans_svg(fuse, title, skin=skin, spacing=spacing)
+        svg = fuselage_plans_svg(fuse, title, skin=skin, spacing=spacing, jig=jig)
     except ValueError as exc:
         raise SliceError(str(exc)) from exc
     return f"{title}-plans.svg", svg
+
+
+def fuselage_stl(project: dict[str, Any]) -> tuple[str, bytes]:
+    """File name and binary STL of the finished fuselage (for 3D printing or CAD)."""
+    from .fuselage import fuselage_mesh, stl_binary
+
+    part = project.get("part") or {}
+    if not isinstance(part, dict) or part.get("type") != "fuselage":
+        raise SliceError("the 3D model is for fuselages")
+    fuse, _ = build_fuselage(part)
+    title = str(project.get("title") or "Fuselage")
+    return f"{title}.stl", stl_binary(fuselage_mesh(fuse), f"open_HOWI {title}")

@@ -98,6 +98,9 @@ class MachineController:
         self._in_flight = 0
         self._commands: deque[str] = deque()
         self._job_lines: list[str] = []
+        self._pauses: list[str] = []
+        """What each M0 in the job is for, in order."""
+        self._next_pause = 0
         self.job: dict[str, Any] | None = None
 
     # Public API (any thread) ---------------------------------------------------
@@ -197,6 +200,14 @@ class MachineController:
 
     def start_job(self, gcode: str, name: str = "job") -> None:
         lines = [c for c in (clean_line(x) for x in gcode.splitlines()) if c]
+        pauses, note = [], ""
+        for raw in gcode.splitlines():  # "(PAUSE: ...)" comments say what each M0 is for
+            text = raw.strip()
+            if text.upper().startswith("(PAUSE:"):
+                note = text[7:].rstrip(")").strip()
+            elif clean_line(text) in ("M0", "M00"):
+                pauses.append(note or "Program pause: resume when ready.")
+                note = ""
         if not lines:
             raise ControllerError("the G-code is empty")
         too_long = next((x for x in lines if len(x) + 1 > self.rx_buffer), None)
@@ -211,8 +222,10 @@ class MachineController:
             if self.status.get("state") not in ("Idle", None):
                 raise ControllerError(f"the machine must be Idle to start (it is {self.status.get('state')})")
             self._job_lines = lines
+            self._pauses, self._next_pause = pauses, 0
             self.job = {"name": name, "state": "running", "total": len(lines), "sent": 0, "acked": 0,
-                        "started": time.time(), "finished": None, "error": None}  # fmt: skip
+                        "started": time.time(), "finished": None, "error": None, "message": None,
+                        "pauses": len(pauses)}  # fmt: skip
             self._log_line("info", f"job started: {name} ({len(lines)} lines)")
 
     def pause(self) -> None:
@@ -227,6 +240,9 @@ class MachineController:
             if not self.job or self.job["state"] != "paused":
                 raise ControllerError("the job is not paused")
             self.job["state"] = "running" if self.job["acked"] < self.job["total"] else "finishing"
+            if self.job.get("message"):
+                self._next_pause += 1
+                self.job["message"] = None
         self._realtime(CYCLE_START)
 
     def stop(self) -> None:
@@ -326,6 +342,15 @@ class MachineController:
                 if job and job["state"] == "finishing" and self.status["state"] == "Idle":
                     job.update(state="done", finished=time.time())
                     self._log_line("info", "job finished")
+                elif (
+                    job
+                    and job["state"] in ("running", "finishing")
+                    and self.status["state"] == "Hold"
+                    and self._next_pause < len(self._pauses)
+                ):  # the job's own M0: tell the operator what to do
+                    message = self._pauses[self._next_pause]
+                    job.update(state="paused", message=message)
+                    self._log_line("info", f"paused: {message}")
                 return
             if msg == "ok" or msg.startswith("error"):
                 size, source = self._pending.popleft() if self._pending else (0, "cmd")

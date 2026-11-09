@@ -7,6 +7,11 @@ Two views
     those locate it for pass 2, where it lies on its side and the top view is
     cut out. The sections come out square-ish and are rounded by hand.
 
+Turned
+    The block is turned about the fuselage's axis between passes, on a
+    polygon jig rolled by hand (or by a rotary axis); every pass cuts the top
+    silhouette, so N passes leave an N-sided fuselage that needs little sanding.
+
 Lengthwise segments
     The wire runs along the fuselage. Each segment is a ruled surface between
     the sections at its ends, like a wing panel: the sections come out
@@ -18,17 +23,20 @@ Lengthwise segments
 
 from __future__ import annotations
 
+import math
 from collections.abc import Callable
 from dataclasses import dataclass, field
 
-from .fuselage import MIN_SECTION, Fuselage, FuselageError, half_ring
+from . import diagrams
+from .fuselage import MIN_SECTION, Fuselage, FuselageError, auto_axis, finished_section, half_ring, ray_distance
 from .geometry import Point, offset_polygon, offset_polyline, polyline_length, signed_area
 from .machine import Machine
 from .shapes import Region, ShapeLayout, layout_shapes, shapes_toolpath
-from .toolpath import Move, Placement, Toolpath, WingLayout, check_limits, span_positions, wing_toolpath
+from .toolpath import Move, Placement, Stop, Toolpath, WingLayout, check_limits, span_positions, wing_toolpath
 from .wing import apply_kerf, project_to_towers
 
-METHODS = ("two_view", "segments")
+METHODS = ("two_view", "turned", "segments")
+FACETS = (4, 6, 8, 12, 16, 24, 32)
 AIR = 5.0
 """How far past the block the wire turns round in pass 1 (mm)."""
 
@@ -48,10 +56,22 @@ class CutOptions:
     """Foam left around the part on every side (mm)."""
     points: int = 64
     """Points per section (lengthwise segments), a multiple of 4."""
+    facets: int = 8
+    """Turned: passes all round, i.e. sides of the cut fuselage."""
+    plate: float = 6.0
+    """Turned by hand: thickness of the jig's end plates (mm)."""
+    hold: float = 5.0
+    """Turned: foam kept round the axis (mm), so the part stays joined to the end stubs."""
+    axis: float | None = None
+    """Turned: height of the turning axis above the datum (mm); None picks one."""
 
     def __post_init__(self) -> None:
         if self.method not in METHODS:
-            raise ValueError('cut method must be "two_view" or "segments"')
+            raise ValueError('cut method must be "two_view", "turned" or "segments"')
+        if self.facets not in FACETS:
+            raise ValueError(f"facets must be one of {', '.join(map(str, FACETS))}")
+        if self.plate < 0 or self.hold < 1:
+            raise ValueError("plate thickness must be >= 0 and the foam kept round the axis >= 1 mm")
         if self.wall < 0 or self.spare < 1:
             raise ValueError("wall must be >= 0 and spare foam >= 1 mm")
         if self.points % 4 or not 16 <= self.points <= 400:
@@ -73,6 +93,11 @@ class CutJob:
     warnings: list[str] = field(default_factory=list)
     ghost: list[Ring3] = field(default_factory=list)
     """The finished fuselage (rounded) in this job's machine position, as rings to loft, for display."""
+    ghost_label: str = "Finished shape (after sanding)"
+    steps: list[dict[str, object]] = field(default_factory=list)
+    """What to do, step by step: {"title", "notes", "svg"}."""
+    jig: dict[str, float] | None = None
+    """Turned by hand: the end plates (sides, apothem, circumradius, thickness, block half side)."""
 
 
 KerfFn = Callable[[tuple[float, float]], tuple[float, float]]
@@ -81,6 +106,8 @@ KerfFn = Callable[[tuple[float, float]], tuple[float, float]]
 def job_labels(fuse: Fuselage, options: CutOptions) -> list[str]:
     if options.method == "two_view":
         return ["Pass 1 · side view", "Pass 2 · top view"]
+    if options.method == "turned":
+        return [f"All {options.facets} passes, turning the block"]
     labels = []
     segs = fuse.segments(options.segment_length)
     for k, (xa, xb) in enumerate(segs, start=1):
@@ -98,6 +125,8 @@ def build_job(
     if options.method == "two_view":
         kerf = kerfs((1.0, 1.0))[0]
         job = (_side_pass if index == 0 else _plan_pass)(fuse, options, machine, placement, kerf)
+    elif options.method == "turned":
+        job = _turned(fuse, options, machine, placement, kerfs((1.0, 1.0))[0])
     else:
         per = 2 if options.halves else 1
         job = _segment(fuse, options, index // per, index % per == 1, machine, placement, kerfs)
@@ -155,6 +184,16 @@ def _side_pass(fuse: Fuselage, opt: CutOptions, machine: Machine, placement: Pla
     slab = (top_line + bottom_line)[::-1]  # counter-clockwise
     block = _block(b0, b1, placement.y_offset, dy + hi + opt.spare, z_root, z_tip)
     zc = (z_root + z_tip) / 2
+    side_svg = diagrams.side_view(
+        (b0, placement.y_offset, b1, block["y1"]), [m(p) for p in fuse.side_outline()], [top_line, bottom_line],
+        fence=placement.x_margin, support=placement.y_offset, title="Pass 1: the side view",
+    )  # fmt: skip
+    widest = max(fuse.sample_xs(fuse.length / 60), key=lambda x: fuse.width(x) * (fuse.top(x) - fuse.bottom(x)))
+    end_svg = diagrams.section_view(
+        [[(u, v + dy) for u, v in finished_section(fuse, widest)]],
+        (-width / 2 - opt.spare, placement.y_offset, width / 2 + opt.spare, block["y1"]),
+        "Seen from the nose end", support=placement.y_offset, note="top up, standing on its bottom face",
+    )  # fmt: skip
     return CutJob(
         "",
         toolpath,
@@ -177,6 +216,10 @@ def _side_pass(fuse: Fuselage, opt: CutOptions, machine: Machine, placement: Pla
             ),
         ],
         ghost=_ghost(fuse, lambda x, u, v: (nose_x + x, dy + v, zc + u)),
+        steps=[
+            {"title": "Pass 1 of 2: side view", "svg": side_svg, "notes": []},
+            {"title": "", "svg": end_svg, "notes": []},
+        ],
     )
 
 
@@ -195,6 +238,18 @@ def _plan_pass(fuse: Fuselage, opt: CutOptions, machine: Machine, placement: Pla
                    layout.z_root, layout.z_tip)  # fmt: skip
     zlo = block["z0"]
     centre = placement.y_offset + opt.spare + width / 2
+    plan_svg = diagrams.side_view(
+        (placement.x_margin, placement.y_offset, b1, block["y1"]),
+        [(nose_x + x, centre + u) for x, u in fuse.plan_outline()],
+        [[(nose_x + x, centre + u) for x, u in fuse.plan_outline()]],
+        fence=placement.x_margin, support=placement.y_offset, title="Pass 2: the top view", closed=True,
+    )  # fmt: skip
+    widest = max(fuse.sample_xs(fuse.length / 60), key=lambda x: fuse.width(x) * (fuse.top(x) - fuse.bottom(x)))
+    turned = [(-(v - lo) + (hi - lo) / 2, u + centre) for u, v in finished_section(fuse, widest)]
+    end_svg = diagrams.section_view(
+        [turned], (-(hi - lo) / 2, placement.y_offset, (hi - lo) / 2, block["y1"]),
+        "Turn the slab 90° onto its side", support=placement.y_offset, arrow=True, note="seen from the nose end",
+    )  # fmt: skip
     return CutJob(
         "",
         toolpath,
@@ -218,6 +273,10 @@ def _plan_pass(fuse: Fuselage, opt: CutOptions, machine: Machine, placement: Pla
         ],
         warnings=list(layout.warnings),
         ghost=_ghost(fuse, lambda x, u, v: (nose_x + x, centre + u, zlo + (v - lo))),
+        steps=[
+            {"title": "Pass 2 of 2: top view", "svg": end_svg, "notes": []},
+            {"title": "", "svg": plan_svg, "notes": []},
+        ],
     )
 
 
@@ -364,6 +423,12 @@ def _segment(
     if opt.halves:
         notes.append("Cut the right and the left half of every segment, then glue them along the centre line.")
     notes.append("Glue the segments in order, nose first: their ends match the formers in the plans.")
+    svg = diagrams.section_view(
+        [sh(nominal[0]), *[sh(h) for h in holes[0]]] if not opt.halves else [sh(nominal[0])],
+        (block["x0"], block["y0"], block["x1"], block["y1"]),
+        f"Segment {k + 1}: {'right' if not left else 'left'} half" if opt.halves else f"Segment {k + 1}",
+        support=under, note=f"seen along the wire, from the {near} carriage side: X = 0 to the left",
+    )  # fmt: skip
     return CutJob(
         "",
         toolpath,
@@ -376,4 +441,221 @@ def _segment(
         block,
         notes,
         warnings,
+        steps=[{"title": "", "svg": svg, "notes": []}],
+    )
+
+
+# Turned -----------------------------------------------------------------------------------------------
+
+
+def _turned(fuse: Fuselage, opt: CutOptions, machine: Machine, placement: Placement, kerf: float) -> CutJob:
+    """Every pass cuts the top silhouette; between passes the block turns by 360 / facets degrees."""
+    sides = opt.facets
+    step = 360.0 / sides
+    rotary = bool(machine.rotary_axis)
+    y_axis_f = opt.axis if opt.axis is not None else auto_axis(fuse)
+    xs = fuse.sample_xs(max(1.5, fuse.length / 300))
+    rings = {x: [(u, v - y_axis_f) for u, v in finished_section(fuse, x, 96)] for x in xs}
+    radius = max(math.hypot(u, w) for ring in rings.values() for u, w in ring)
+    half = radius + opt.spare  # the block: a square round the axis
+    warnings: list[str] = []
+    thin = [
+        x
+        for x in xs[::3]
+        if 0.02 * fuse.length < x < 0.98 * fuse.length
+        and min(ray_distance(rings[x], (0.0, 0.0), math.radians(a)) for a in range(0, 360, 20)) < opt.hold
+    ]
+    if thin:
+        warnings.append(
+            f"Between {min(thin):.0f} and {max(thin):.0f} mm from the nose the turning axis runs close to (or "
+            f"outside) the fuselage: {opt.hold:g} mm of foam is kept round it there; carve that by hand, or move "
+            "the axis."
+        )
+
+    # Where the block goes.
+    plate_t = 0.0 if rotary else opt.plate
+    if rotary:
+        apothem = None
+        y_axis = machine.rotary_height
+        if y_axis - half * math.sqrt(2) < placement.y_offset:
+            warnings.append(
+                f"On the rotary axis at Y {y_axis:g} mm the turning block reaches down to "
+                f"Y {y_axis - half * math.sqrt(2):.0f} mm: check it clears the table."
+            )
+        top_clear = y_axis + half * math.sqrt(2) + 5
+    else:
+        apothem = half * math.sqrt(2) + 3  # the block's corners never touch the support
+        y_axis = placement.y_offset + apothem
+        top_clear = y_axis + apothem / math.cos(math.pi / sides) + 5
+    if top_clear > machine.y_travel:
+        raise FuselageError(
+            f"the wire must pass {top_clear:.0f} mm high to clear the turning block"
+            f"{'' if rotary else ' and its jig plates'}, more than the machine's {machine.y_travel:g} mm: use a "
+            "machine with more vertical travel, or less spare foam"
+        )
+    stub = max(opt.spare, 10.0)
+    b0 = placement.x_margin + plate_t
+    nose_x = b0 + stub
+    b1 = nose_x + fuse.length + stub
+    x_in, x_out = b0 + 3.0, b1 - 3.0
+    z_root, z_tip = span_positions(2 * half, machine, placement)
+    zc = (z_root + z_tip) / 2
+
+    # The passes: pass k cuts the top silhouette with the block turned clockwise by (k - 1) * step.
+    def silhouette(k: int) -> list[float]:
+        b = math.radians((k - 1) * step)
+        sb, cb = math.sin(b), math.cos(b)
+        return [max(opt.hold, max(-u * sb + w * cb for u, w in rings[x])) for x in xs]
+
+    heights = [silhouette(k) for k in range(1, sides + 1)]
+    moves: list[Move] = [Move((0.0, top_clear), (0.0, top_clear), False)]
+    stops: list[Stop] = []
+    for k, hs in enumerate(heights, start=1):
+        if k > 1:
+            stops.append(
+                Stop(len(moves), f"pass {k} of {sides}: turn to {(k - 1) * step:g} deg", (k - 1) * step)
+                if rotary
+                else Stop(
+                    len(moves),
+                    f"Pass {k} of {sides}: roll the block onto edge {k}, the same way round as before, and lift off "
+                    "the loose foam.",
+                )
+            )
+        line = (
+            [(x_in, y_axis + hs[0])] + [(nose_x + x, y_axis + h) for x, h in zip(xs, hs)] + [(x_out, y_axis + hs[-1])]
+        )
+        cut = offset_polyline(line, kerf / 2) if kerf else line
+        moves.append(Move((x_in, top_clear), (x_in, top_clear), False))
+        moves += [Move(p, p, True) for p in cut]
+        moves.append(Move((x_out, top_clear), (x_out, top_clear), True))
+        moves.append(Move((0.0, top_clear), (0.0, top_clear), False))
+    moves.append(Move((0.0, 0.0), (0.0, 0.0), False))
+    toolpath = Toolpath(tuple(moves), foam_span=(min(z_root, z_tip), max(z_root, z_tip)), stops=tuple(stops))
+    check_limits(toolpath, machine)
+
+    # The faceted result: each section is cut down to the polygon the passes leave.
+    normals = [math.radians(90 + (k - 1) * step) for k in range(1, sides + 1)]
+
+    def facet_radius(i: int, angle: float) -> float:
+        return min(
+            heights[k][i] / math.cos(angle - normals[k]) for k in range(sides) if math.cos(angle - normals[k]) > 1e-6
+        )
+
+    rays = [2 * math.pi * j / 48 for j in range(48)]
+    excess = 0.0
+    for i, x in enumerate(xs):
+        if 0.05 * fuse.length < x < 0.95 * fuse.length:
+            excess = max(excess, max(facet_radius(i, a) - ray_distance(rings[x], (0.0, 0.0), a) for a in rays[::4]))
+    every = max(1, len(xs) // 60)
+    ghost = [
+        [(nose_x + x, y_axis + facet_radius(i, a) * math.sin(a), zc + facet_radius(i, a) * math.cos(a)) for a in rays]
+        for i, x in list(enumerate(xs))[::every]
+    ]
+    block_box = _block(b0, b1, y_axis - half, y_axis + half, z_root, z_tip)
+    box = [(b0, y_axis - half), (b1, y_axis - half), (b1, y_axis + half), (b0, y_axis + half)]
+
+    # Steps, with drawings.
+    widest = max(xs, key=lambda x: abs(signed_area(rings[x])))
+    near = placement.root_side.upper()
+    steps: list[dict[str, object]] = []
+    if rotary:
+        prepare = [
+            (
+                f"Cut a foam block {2 * half:.0f} × {2 * half:.0f} mm square and {b1 - b0:.0f} mm long. The fuselage "
+                f"axis runs through the centre of both end faces, {y_axis_f - fuse.bottom(0, False):.0f} mm above the "
+                "nose's bottom line."
+            ),
+            (
+                f"Mount it on the rotary axis ({machine.rotary_axis}, at Y {y_axis:g} mm) through those centres, "
+                f"nose end towards X = 0 with its end face at X {b0:g} mm, bottom face down at 0°, between "
+                f"{block_box['z0']:.0f} and {block_box['z1']:.0f} mm from the {near} carriage."
+            ),
+        ]
+    else:
+        assert apothem is not None
+        prepare = [
+            (
+                f"Cut a foam block {2 * half:.0f} × {2 * half:.0f} mm square and {b1 - b0:.0f} mm long, and mark the "
+                "centre of both end faces: the fuselage axis."
+            ),
+            (
+                f"Make two {sides}-sided jig plates from {plate_t:g} mm plywood or MDF, {2 * apothem:.0f} mm across the "
+                f"flats (print the template in the cutting guide). Number the edges 1 to {sides} on the nose-end plate, "
+                "counter-clockwise as you look at it."
+            ),
+            (
+                "Screw or glue a plate to each end face, centred on the axis mark, with the block's bottom face parallel "
+                "to edge 1 and both plates' edges lined up."
+            ),
+            (
+                f"Stand the jig on edge 1 on a flat board at Y {placement.y_offset:g} mm, the nose-end plate against a "
+                f"stop at X {placement.x_margin:g} mm, between {block_box['z0']:.0f} and {block_box['z1']:.0f} mm from "
+                f"the {near} carriage. Start the job."
+            ),
+        ]
+    steps.append({"title": "Prepare the block" + ("" if rotary else " and the jig"), "notes": prepare, "svg": ""})
+    side_svg = diagrams.side_view(
+        (b0, y_axis - half, b1, y_axis + half),
+        [(nose_x + x, y_axis + y - y_axis_f) for x, y in fuse.side_outline()],
+        [[(x_in, top_clear)] + [(nose_x + x, y_axis + h) for x, h in zip(xs, heights[0])] + [(x_out, top_clear)]],
+        fence=placement.x_margin, support=None if rotary else placement.y_offset,
+        plates=None if rotary else (b0, b1, apothem / math.cos(math.pi / sides), max(plate_t, 2.0)),
+        title="Each pass: down, along the top, back up",
+    )  # fmt: skip
+    for k in range(1, sides + 1):
+        notes = []
+        if k == 1:
+            notes.append("Edge 1 down." if not rotary else "The rotary axis at 0°.")
+        elif rotary:
+            notes.append(f"The rotary axis turns to {(k - 1) * step:g}° by itself.")
+        else:
+            notes.append(
+                f"The job pauses with the wire off: roll the block onto edge {k}, always the same way round, and "
+                "lift off the loose foam. Then press Resume."
+            )
+        if k == sides:
+            notes.append(
+                f"Finally saw the fuselage off the end stubs and sand the corners round (they stand up to "
+                f"{excess:.1f} mm proud)."
+            )
+        steps.append({
+            "title": f"Pass {k} of {sides}",
+            "notes": notes,
+            "svg": diagrams.turned_end_view(
+                rings[widest], half, sides, k, heights[k - 1][xs.index(widest)],
+                [heights[j][xs.index(widest)] for j in range(k - 1)], apothem,
+            ),
+        })  # fmt: skip
+    steps.insert(1, {"title": "", "notes": [], "svg": side_svg})
+
+    notes = [str(n) for n in prepare] + [
+        (
+            f"The rotary axis turns the block {step:g}° between passes."
+            if rotary
+            else f"Between passes the job pauses with the wire off: roll the block onto the next edge (2, 3, … "
+            f"{sides}), always the same way round, then press Resume."
+        ),
+        f"Afterwards saw the fuselage off the end stubs and sand the {sides} corners round (up to {excess:.1f} mm).",
+    ]
+    jig = None
+    if not rotary:
+        assert apothem is not None
+        jig = {"sides": sides, "apothem": apothem, "circumradius": apothem / math.cos(math.pi / sides),
+               "thickness": plate_t, "half": half}  # fmt: skip
+    return CutJob(
+        "",
+        toolpath,
+        z_root,
+        z_tip,
+        [Region(box)],
+        [Region(box)],
+        (kerf, kerf),
+        (1.0, 1.0),
+        block_box | {"y0": min(block_box["y0"], placement.y_offset)},
+        notes,
+        warnings,
+        ghost,
+        f"The {sides}-sided fuselage it cuts",
+        steps,
+        jig,
     )

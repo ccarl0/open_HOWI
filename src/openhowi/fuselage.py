@@ -29,6 +29,8 @@ from dataclasses import dataclass
 from .airfoil import Airfoil
 from .geometry import Point, cumulative_lengths, offset_polygon, point_at_length
 
+Point3 = tuple[float, float, float]
+
 MIN_SECTION = 2.0
 """Smallest section (mm) a lengthwise segment is cut with: the wire cannot cut a point."""
 
@@ -426,3 +428,107 @@ def half_ring(section: list[Point], inner: list[Point] | None = None) -> list[Po
         return [(max(u, 0.0), v) for u, v in right]
     inside = inner[: n // 2 + 1][::-1]
     return [(max(u, 0.0), v) for u, v in right + inside]
+
+
+def clip_ring(ring: list[Point], limit: float, keep_below: bool) -> list[Point]:
+    """The part of a closed outline below (or above) the horizontal line y = ``limit``."""
+
+    def inside(p: Point) -> bool:
+        return p[1] <= limit if keep_below else p[1] >= limit
+
+    out: list[Point] = []
+    for a, b in zip(ring, ring[1:] + ring[:1]):
+        if inside(a):
+            out.append(a)
+        if inside(a) != inside(b):
+            t = (limit - a[1]) / (b[1] - a[1])
+            out.append((a[0] + (b[0] - a[0]) * t, limit))
+    return out
+
+
+def finished_section(fuse: Fuselage, x: float, n: int = 64, minimum: float = 0.0) -> list[Point]:
+    """The section at ``x`` as the fuselage will be: rounded, and cut down by any wing saddle."""
+    ring = fuse.section(x, n, minimum=minimum)
+    for saddle in fuse.saddles:
+        line = saddle.line()
+        if line[0][0] <= x <= line[-1][0]:
+            top = saddle.side == "top"
+            clipped = clip_ring(ring, fuse.top(x) if top else fuse.bottom(x), top)
+            if len(clipped) >= 3:
+                ring = clipped
+    return ring
+
+
+def ray_distance(ring: Sequence[Point], centre: Point, angle: float) -> float:
+    """How far a ray from ``centre`` at ``angle`` (radians) runs before leaving a closed outline."""
+    dx, dy = math.cos(angle), math.sin(angle)
+    best = 0.0
+    for (x1, y1), (x2, y2) in zip(ring, list(ring[1:]) + [ring[0]]):
+        ex, ey = x2 - x1, y2 - y1
+        den = dx * ey - dy * ex
+        if abs(den) < 1e-12:
+            continue
+        t = ((x1 - centre[0]) * ey - (y1 - centre[1]) * ex) / den
+        s = ((x1 - centre[0]) * dy - (y1 - centre[1]) * dx) / den
+        if t >= 0 and 0 <= s <= 1:
+            best = max(best, t)
+    return best
+
+
+def auto_axis(fuse: Fuselage) -> float:
+    """A height for a turning axis that stays as deep inside the fuselage as possible along its length."""
+    xs = [fuse.length * (0.05 + 0.9 * k / 60) for k in range(61)]
+    lines = [(fuse.top(x), fuse.bottom(x)) for x in xs]
+    lo, hi = min(b for _, b in lines), max(t for t, _ in lines)
+    best, best_score = (lo + hi) / 2, -math.inf
+    for k in range(401):
+        y = lo + (hi - lo) * k / 400
+        score = min(min(t - y, y - b) for t, b in lines)
+        if score > best_score:
+            best, best_score = y, score
+    return best
+
+
+def fuselage_mesh(fuse: Fuselage, stations: int = 120, n: int = 64) -> list[tuple[Point3, Point3, Point3]]:
+    """Triangles of the finished fuselage surface (x forward from the nose, y up, z sideways), closed at both ends."""
+    rings: list[list[Point3]] = []
+    centres: list[Point3] = []
+    for k in range(stations + 1):
+        x = fuse.length * k / stations
+        ring = finished_section(fuse, x, 96)
+        cy = (fuse.top(x) + fuse.bottom(x)) / 2
+        cu = sum(p[0] for p in ring) / len(ring)
+        rings.append(
+            [
+                (x, cy + r * math.sin(a), cu + r * math.cos(a))
+                for a, r in (
+                    (a, ray_distance(ring, (cu, cy), a)) for a in (2 * math.pi * j / n - math.pi / 2 for j in range(n))
+                )
+            ]
+        )
+        centres.append((x, cy, cu))
+    tris: list[tuple[Point3, Point3, Point3]] = []
+    for a, b in itertools.pairwise(rings):
+        for j in range(n):
+            p, q, r, s = a[j], a[(j + 1) % n], b[j], b[(j + 1) % n]
+            tris += [(p, r, q), (q, r, s)]
+    for ring, centre, flip in ((rings[0], centres[0], True), (rings[-1], centres[-1], False)):
+        for j in range(n):
+            p, q = ring[j], ring[(j + 1) % n]
+            tris.append((centre, q, p) if flip else (centre, p, q))
+    return tris
+
+
+def stl_binary(triangles: Sequence[tuple[Point3, Point3, Point3]], name: str = "open_HOWI fuselage") -> bytes:
+    """A binary STL file (millimetres)."""
+    import struct
+
+    out = bytearray(name.encode("ascii", "replace")[:80].ljust(80, b" "))
+    out += struct.pack("<I", len(triangles))
+    for a, b, c in triangles:
+        ux, uy, uz = (b[i] - a[i] for i in range(3))
+        vx, vy, vz = (c[i] - a[i] for i in range(3))
+        nx, ny, nz = uy * vz - uz * vy, uz * vx - ux * vz, ux * vy - uy * vx
+        norm = math.sqrt(nx * nx + ny * ny + nz * nz) or 1.0
+        out += struct.pack("<12fH", nx / norm, ny / norm, nz / norm, *a, *b, *c, 0)
+    return bytes(out)

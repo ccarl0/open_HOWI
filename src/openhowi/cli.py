@@ -208,6 +208,24 @@ def cmd_slice(args: argparse.Namespace) -> int:
             return _err(f"--plans: {exc}")
         Path(args.plans).write_text(svg, encoding="utf-8")
         print(f"Wrote {args.plans} (print at 100 %)")
+    if args.guide:
+        from .guide import cutting_guide_html
+
+        try:
+            _, html = cutting_guide_html(project)
+        except SliceError as exc:
+            return _err(f"--guide: {exc}")
+        Path(args.guide).write_text(html, encoding="utf-8")
+        print(f"Wrote {args.guide} (open it in a browser and print it)")
+    if args.stl:
+        from .project import fuselage_stl
+
+        try:
+            _, data = fuselage_stl(project)
+        except SliceError as exc:
+            return _err(f"--stl: {exc}")
+        Path(args.stl).write_bytes(data)
+        print(f"Wrote {args.stl}")
     if args.bay_template:
         if result.wing is None or not result.wing.bays:
             return _err("--bay-template: this project has no servo bays")
@@ -301,6 +319,8 @@ def build_parser() -> argparse.ArgumentParser:
     p.add_argument("-o", "--output", help="G-code file to write (default: <project name>.gcode)")
     p.add_argument("--bay-template", metavar="SVG", help="also write the 1:1 servo bay template")
     p.add_argument("--plans", metavar="SVG", help="fuselages: also write the 1:1 plans and formers")
+    p.add_argument("--guide", metavar="HTML", help="fuselages: also write the printable cutting guide")
+    p.add_argument("--stl", metavar="STL", help="fuselages: also write a 3D model of the finished fuselage")
     p.set_defaults(func=cmd_slice)
 
     p = sub.add_parser("shape", help="cut the closed outlines of an SVG or DXF drawing")
