@@ -342,3 +342,9 @@ dialog.wide { width: min(720px, calc(100vw - 32px)); }
 
 .quit-note { max-width: 520px; margin: 18vh auto; padding: 0 16px; text-align: center; }
 .quit-note h1 { font-size: 22px; margin-bottom: 8px; }
+.remote-note { margin: 0 0 8px; }
+.remote-note b { font-weight: 600; user-select: all; }
+.nogl { position: absolute; inset: 64px 24px auto; max-width: 560px; margin: 0 auto; padding: 16px 18px; border-radius: 10px;
+  background: var(--panel); border: 1px solid var(--border); color: var(--text); }
+.nogl p { margin: 6px 0; color: var(--muted); }
+.nogl small { color: var(--muted); font-size: 11px; word-break: break-word; }

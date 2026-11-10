@@ -10,7 +10,11 @@ readme = "README.md"
 license = "GPL-3.0-or-later"
 license-files = ["LICENSE"]
 requires-python = ">=3.11"
-dependencies = ["pyserial>=3.5"]
+dependencies = [
+    "pyserial>=3.5",
+    # The app's own window; it uses the web engine the system has (Edge WebView2, WebKit).
+    "pywebview>=5.3; sys_platform == 'win32' or sys_platform == 'darwin'",
+]
 keywords = ["cnc", "hot wire", "foam cutter", "g-code", "grbl", "rc", "airfoil"]
 classifiers = [
     "Programming Language :: Python :: 3",
@@ -20,7 +24,9 @@ classifiers = [
 
 [project.optional-dependencies]
 serial = ["pyserial>=3.5"]
-dev = ["pytest>=8"]
+# Linux desktops: the app window through Qt WebEngine (without it the app opens in the browser)
+window = ["pywebview[qt]>=5.3"]
+dev = ["pytest>=8", "pywebview>=5.3"]
 
 [project.scripts]
 openhowi = "openhowi.cli:main"
@@ -33,7 +39,7 @@ version = { attr = "openhowi.__version__" }
 where = ["src"]
 
 [tool.setuptools.package-data]
-openhowi = ["web/*.html", "web/*.css", "web/*.js", "web/*.svg", "web/vendor/three/*", "airfoils/*.dat", "airfoils/*.md"]
+openhowi = ["web/*.html", "web/*.css", "web/*.js", "web/*.svg", "web/*.png", "web/vendor/three/*", "airfoils/*.dat", "airfoils/*.md"]
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]

@@ -164,10 +164,14 @@ def cmd_send(args: argparse.Namespace) -> int:
 
 
 def cmd_gui(args: argparse.Namespace) -> int:
+    import os
+
     from .server import serve
 
+    password = args.password or os.environ.get("OPENHOWI_PASSWORD") or None
     try:
-        serve(args.host, args.port, open_browser=not args.no_browser, allow_hosts=tuple(args.allow_host))
+        serve(args.host, args.port, open_browser=not args.no_browser, allow_hosts=tuple(args.allow_host),
+              password=password)  # fmt: skip
     except OSError as exc:
         return _err(f"cannot listen on {args.host}:{args.port}: {exc}")
     return 0
@@ -311,6 +315,10 @@ def build_parser() -> argparse.ArgumentParser:
     p.add_argument("--no-browser", action="store_true", help="don't open a browser window")
     p.add_argument(
         "--allow-host", action="append", default=[], help="extra host name the app may be reached by (repeatable)"
+    )
+    p.add_argument(
+        "--password",
+        help="with --host 0.0.0.0: the password other computers must give (or set OPENHOWI_PASSWORD; any user name)",
     )
     p.set_defaults(func=cmd_gui)
 

@@ -22,7 +22,16 @@ def run(exe: str, *args: str) -> str:
     return done.stdout
 
 
-def main(exe: str) -> None:
+def program(folder: Path, name: str) -> str:
+    for candidate in (folder / name, folder / f"{name}.exe"):
+        if candidate.exists():
+            return str(candidate)
+    raise SystemExit(f"{name} is missing from {folder}")
+
+
+def main(folder: str, window: bool = False) -> None:
+    exe = program(Path(folder), "openhowi")
+    app = program(Path(folder), "open_HOWI")
     with tempfile.TemporaryDirectory() as tmp:
         out = Path(tmp)
         run(exe, "airfoils", "--export", "sd7037", "-o", str(out / "sd7037.dat"))
@@ -52,6 +61,14 @@ def main(exe: str) -> None:
             server.terminate()
             server.wait(timeout=20)
 
+        report = out / "self-test.txt"
+        args = [app, "--self-test", *(["window"] if window else []), "--report", str(report)]
+        done = subprocess.run(args, capture_output=True, text=True, timeout=240, check=False)
+        text = report.read_text() if report.exists() else done.stdout + done.stderr
+        print("app window:", text.strip().replace("\n", "; "))
+        if done.returncode:
+            raise SystemExit("the app window check failed")
+
 
 if __name__ == "__main__":
-    main(sys.argv[1])
+    main(sys.argv[1], "--window" in sys.argv[2:])

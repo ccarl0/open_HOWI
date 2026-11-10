@@ -1,18 +1,23 @@
 # SPDX-License-Identifier: GPL-3.0-or-later
 """Local web server for the open_HOWI app (``openhowi gui``).
 
-The UI runs in the browser; slicing and the serial connection run here.
-By default it only listens on 127.0.0.1. Because this server can move a
-machine and switch a hot wire on, it also refuses requests whose Host header
-is not this machine (DNS rebinding) and only accepts JSON writes from its own
-origin (other websites cannot drive it through your browser).
+The UI runs in the browser (or the app's own window); slicing and the serial
+connection run here. By default it only listens on 127.0.0.1. Because this
+server can move a machine and switch a hot wire on, it also refuses requests
+whose Host header is not this machine (DNS rebinding) and only accepts JSON
+writes from its own origin (other websites cannot drive it through your
+browser). Listening on the network (e.g. on a Raspberry Pi next to the
+machine), it can ask other computers for a password.
 """
 
 from __future__ import annotations
 
+import base64
+import hmac
 import ipaddress
 import json
 import mimetypes
+import socket
 import threading
 import webbrowser
 from collections.abc import Callable
@@ -59,6 +64,8 @@ CSP = (
     "default-src 'self'; script-src 'self'; style-src 'self' 'unsafe-inline'; img-src 'self' data: blob:; "
     "connect-src 'self'; object-src 'none'; base-uri 'none'; frame-ancestors 'none'"
 )
+CSP_WINDOW = CSP.replace("script-src 'self'", "script-src 'self' 'unsafe-eval'")
+"""The app window's own page: pywebview builds its bridge to Python with ``new Function``."""
 
 
 class ApiError(Exception):
@@ -75,6 +82,15 @@ class App:
         self.controller = controller or MachineController()
         self.quit: Callable[[], None] | None = None
         """Set when the app was started from a desktop shortcut: how the UI's Quit button stops it."""
+        self.focus: Callable[[], None] | None = None
+        """Set in the app's own window: brings it to the front (when it is started a second time)."""
+        self.window = False
+        """True in the app's own window (it has a menu with Quit, and native file dialogs)."""
+        self.shell_token: str | None = None
+        """The app window loads the page with this secret: only that page may run pywebview's bridge,
+        which needs 'unsafe-eval'; browser tabs keep the strict policy."""
+        self.remote: dict[str, Any] | None = None
+        """Listening on the network: the addresses to reach it at, and whether it asks for a password."""
         self.routes: dict[tuple[str, str], Callable[[dict[str, Any]], Any]] = {
             ("GET", "/api/info"): self.info,
             ("GET", "/api/presets"): self.presets,
@@ -109,6 +125,7 @@ class App:
             ("POST", "/api/device/resume"): lambda b: self.controller.resume(),
             ("POST", "/api/device/stop"): lambda b: self.controller.stop(),
             ("POST", "/api/app/quit"): self.quit_app,
+            ("POST", "/api/app/focus"): self.focus_app,
         }
 
     def handle(self, method: str, path: str, payload: dict[str, Any]) -> Any:
@@ -130,10 +147,17 @@ class App:
             self.controller.disconnect()
         self.quit()
 
+    def focus_app(self, _: dict[str, Any]) -> None:
+        if self.focus is None:
+            raise ApiError("no app window to bring forward")
+        self.focus()
+
     def info(self, _: dict[str, Any]) -> dict[str, Any]:
         return {
             "version": __version__,
             "desktop": self.quit is not None,
+            "window": self.window,
+            "remote": self.remote,
             "schema": {
                 "machine": MACHINE_FIELDS,
                 "material": MATERIAL_FIELDS,
@@ -271,14 +295,25 @@ def _num(body: dict[str, Any], key: str, default: float) -> float:
     return float(value)
 
 
+LOOPBACK = ("127.0.0.1", "::1", "::ffff:127.0.0.1")
+
+
 class Server(ThreadingHTTPServer):
     daemon_threads = True
 
-    def __init__(self, address: tuple[str, int], app: App, allow_hosts: tuple[str, ...] = ()):
+    def __init__(
+        self, address: tuple[str, int], app: App, allow_hosts: tuple[str, ...] = (), password: str | None = None
+    ):
         super().__init__(address, Handler)
         self.app = app
-        self.allow_hosts = {h.lower() for h in allow_hosts}
         self.lan = address[0] not in ("127.0.0.1", "localhost", "::1")
+        hosts = {h.lower() for h in allow_hosts}
+        if self.lan:  # this computer's own name is not an attacker's domain: allow it (raspberrypi.local)
+            name = socket.gethostname().lower()
+            hosts |= {name, f"{name}.local"} if name and "." not in name else {name}
+        self.allow_hosts = hosts
+        self.password = password or None
+        """Asked of every computer but this one, when listening on the network."""
 
 
 class Handler(BaseHTTPRequestHandler):
@@ -324,14 +359,37 @@ class Handler(BaseHTTPRequestHandler):
 
     # Dispatch -----------------------------------------------------------------------
 
+    def _authorised(self) -> bool:
+        """With a password set, other computers must give it (HTTP basic auth; any user name)."""
+        password = self.server.password
+        if not password or self.client_address[0] in LOOPBACK:
+            return True
+        header = self.headers.get("Authorization", "")
+        if not header.startswith("Basic "):
+            return False
+        try:
+            _, _, given = base64.b64decode(header[6:]).decode("utf-8").partition(":")
+        except (ValueError, UnicodeDecodeError):
+            return False
+        return hmac.compare_digest(given.encode(), password.encode())
+
     def _dispatch(self, method: str) -> None:
         if not self._host_allowed():
             self._send_json({"error": "unknown host"}, 403)
             return
+        if not self._authorised():
+            body = b"open_HOWI asks for its password."
+            self.send_response(401)
+            self.send_header("WWW-Authenticate", 'Basic realm="open_HOWI", charset="UTF-8"')
+            self.send_header("Content-Type", "text/plain; charset=utf-8")
+            self.send_header("Content-Length", str(len(body)))
+            self.end_headers()
+            self.wfile.write(body)
+            return
         url = urlparse(self.path)
         if not url.path.startswith("/api/"):
             if method == "GET":
-                self._static(url.path)
+                self._static(url.path, parse_qs(url.query).get("shell", [""])[-1])
             else:
                 self._send_json({"error": "not found"}, 404)
             return
@@ -373,7 +431,7 @@ class Handler(BaseHTTPRequestHandler):
         self.end_headers()
         self.wfile.write(body)
 
-    def _static(self, path: str) -> None:
+    def _static(self, path: str, shell: str = "") -> None:
         rel = "index.html" if path in ("", "/") else path.lstrip("/")
         target = (WEB_ROOT / rel).resolve()
         if WEB_ROOT.resolve() not in target.parents or not target.is_file():
@@ -388,9 +446,52 @@ class Handler(BaseHTTPRequestHandler):
         self.send_header("Content-Length", str(len(body)))
         self.send_header("Cache-Control", "no-cache")
         self.send_header("X-Content-Type-Options", "nosniff")
-        self.send_header("Content-Security-Policy", CSP)
+        token = self.server.app.shell_token
+        in_window = bool(token and shell and self.client_address[0] in LOOPBACK and hmac.compare_digest(shell, token))
+        self.send_header("Content-Security-Policy", CSP_WINDOW if in_window else CSP)
         self.end_headers()
         self.wfile.write(body)
+
+
+def lan_addresses(port: int) -> list[str]:
+    """Addresses other computers on the network can reach this one at (best guess)."""
+    ips: set[str] = set()
+    try:
+        with socket.socket(socket.AF_INET, socket.SOCK_DGRAM) as probe:
+            probe.connect(("10.255.255.255", 1))  # no packet is sent: this picks the outgoing interface
+            ips.add(probe.getsockname()[0])
+    except OSError:
+        pass
+    try:
+        ips |= {info[4][0] for info in socket.getaddrinfo(socket.gethostname(), None, socket.AF_INET)}
+    except OSError:
+        pass
+    urls = [f"http://{ip}:{port}/" for ip in sorted(ips) if not ip.startswith("127.")]
+    name = socket.gethostname()
+    if name and "." not in name:
+        urls.append(f"http://{name.lower()}.local:{port}/")
+    return urls
+
+
+def make_server(
+    host: str = "127.0.0.1",
+    port: int = 8765,
+    app: App | None = None,
+    allow_hosts: tuple[str, ...] = (),
+    password: str | None = None,
+) -> Server:
+    """The app's server, listening but not yet serving (call ``serve_forever``)."""
+    app = app or App()
+    server = Server((host, port), app, allow_hosts, password)
+    if server.lan:
+        app.remote = {"addresses": lan_addresses(server.server_address[1]), "password": bool(server.password)}
+    return server
+
+
+def local_url(server: Server) -> str:
+    host = server.server_address[0]
+    shown = "localhost" if host in ("127.0.0.1", "::1", "0.0.0.0", "::") else host
+    return f"http://{shown}:{server.server_address[1]}/"
 
 
 def serve(
@@ -400,17 +501,23 @@ def serve(
     allow_hosts: tuple[str, ...] = (),
     app: App | None = None,
     desktop: bool = False,
+    password: str | None = None,
 ) -> None:
     """Run the app until Ctrl-C (or, with ``desktop``, until the UI's Quit button)."""
-    app = app or App()
-    server = Server((host, port), app, allow_hosts)
+    server = make_server(host, port, app, allow_hosts, password)
+    app = server.app
     if desktop:
         app.quit = lambda: threading.Timer(0.3, server.shutdown).start()
-    url = f"http://{'localhost' if host in ('127.0.0.1', '::1') else host}:{server.server_address[1]}/"
+    url = local_url(server)
     how = "press Quit in the app or close this window to stop it" if desktop else "Ctrl-C to quit"
     print(f"open_HOWI {__version__} running at {url}  ({how})")
     if server.lan:
-        print("WARNING: listening on the network. Anyone who can reach this address can move the machine.")
+        assert app.remote is not None
+        print("On the network at: " + "  ".join(app.remote["addresses"]))
+        if server.password:
+            print("Other computers are asked for the password.")
+        else:
+            print("WARNING: no password. Anyone who can reach these addresses can move the machine.")
     if open_browser:
         threading.Timer(0.5, webbrowser.open, args=(url,)).start()
     try:
@@ -423,4 +530,4 @@ def serve(
         server.server_close()
 
 
-__all__ = ["ApiError", "App", "Server", "serve"]
+__all__ = ["ApiError", "App", "Server", "lan_addresses", "local_url", "make_server", "serve"]
