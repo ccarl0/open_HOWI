@@ -1,0 +1,274 @@
+<!doctype html>
+<!-- SPDX-License-Identifier: GPL-3.0-or-later -->
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>open_HOWI</title>
+  <link rel="icon" href="favicon.svg" type="image/svg+xml">
+  <link rel="stylesheet" href="app.css">
+  <script type="module" src="app.js"></script>
+</head>
+<body>
+  <header class="topbar">
+    <div class="brand">
+      <svg viewBox="0 0 32 32" aria-hidden="true"><path d="M5 26V8M27 26V8" /><path class="wire" d="M5 12 27 18" /></svg>
+      <span>open_HOWI</span>
+    </div>
+    <nav class="tabs" role="tablist">
+      <button role="tab" data-tab="prepare" aria-selected="true">Prepare</button>
+      <button role="tab" data-tab="preview" aria-selected="false">Preview</button>
+      <button role="tab" data-tab="device" aria-selected="false">Device <span class="dot" id="tab-device-dot"></span></button>
+    </nav>
+    <div class="top-actions">
+      <button class="ghost" id="btn-new" title="New project">New</button>
+      <button class="ghost" id="btn-open" title="Open project">Open</button>
+      <button class="ghost" id="btn-save" title="Save project">Save</button>
+      <button class="ghost" id="btn-kerf" title="Calibration: kerf test">Kerf test</button>
+      <button class="danger" id="btn-estop" hidden title="Feed hold + reset: stops motion, wire off">STOP</button>
+      <button class="ghost" id="btn-quit" hidden title="Stop open_HOWI (the machine is disconnected first)">Quit</button>
+    </div>
+  </header>
+
+  <main class="workspace">
+    <section class="viewport">
+      <canvas id="view" aria-label="3D view of the machine and the part"></canvas>
+      <div class="view-tools">
+        <button data-view="iso" title="Isometric view">Iso</button>
+        <button data-view="profile" title="Look along the wire">Profile</button>
+        <button data-view="top" title="Top view">Top</button>
+        <button data-view="side" title="Side view">Side</button>
+      </div>
+      <div class="legend">
+        <span><i class="sw xy"></i>XY carriage path</span>
+        <span><i class="sw uv"></i>UV carriage path</span>
+        <span><i class="sw wire"></i>Wire</span>
+        <span><i class="sw part"></i>Part</span>
+        <span id="legend-bay" hidden><i class="sw bay"></i>Servo bay (cut by hand)</span>
+        <span id="legend-ghost" hidden><i class="sw ghost"></i><span id="legend-ghost-text">Finished shape</span></span>
+      </div>
+      <div class="banner" id="banner" hidden></div>
+      <div class="busy" id="busy" hidden>Slicing…</div>
+      <div class="scrubber" id="scrubber" hidden>
+        <button id="btn-play" class="icon" title="Play">▶</button>
+        <input type="range" id="scrub" min="0" max="1000" value="1000" aria-label="Cut progress">
+        <span class="time" id="scrub-time">0:00 / 0:00</span>
+        <select id="play-speed" aria-label="Playback speed">
+          <option value="1">1×</option><option value="5">5×</option>
+          <option value="20" selected>20×</option><option value="60">60×</option><option value="200">200×</option>
+        </select>
+        <button id="btn-timelapse" title="Every cut of the part, one after the other, in about 15 seconds">Timelapse</button>
+        <button id="btn-video" title="Play the timelapse and save it as a video file">Save video</button>
+      </div>
+      <div class="caption" id="caption" hidden></div>
+    </section>
+
+    <aside class="sidebar">
+      <div class="panel" data-panel="prepare">
+        <section class="card">
+          <h2>Presets</h2>
+          <div class="preset-row">
+            <label for="sel-machine">Machine</label>
+            <select id="sel-machine"></select>
+            <button class="icon" id="edit-machine" title="Edit machine settings">✎</button>
+          </div>
+          <div class="preset-row">
+            <label for="sel-material">Material</label>
+            <select id="sel-material"></select>
+            <button class="icon" id="edit-material" title="Edit material settings">✎</button>
+          </div>
+        </section>
+        <section class="card">
+          <h2>Part</h2>
+          <div class="segmented" id="part-type" role="radiogroup" aria-label="Part type"></div>
+          <div class="field">
+            <label for="project-title">Name</label>
+            <input id="project-title" type="text" placeholder="Wing panel">
+          </div>
+          <div id="part-form"></div>
+          <div class="thumbs" id="thumbs"></div>
+        </section>
+        <section class="card">
+          <h2>Placement</h2>
+          <div id="placement-form"></div>
+        </section>
+      </div>
+
+      <div class="panel" data-panel="preview" hidden>
+        <section class="card">
+          <h2>Cut summary</h2>
+          <dl class="stats" id="stats"></dl>
+          <ul class="warnings" id="warnings"></ul>
+          <div class="row" id="bay-row" hidden>
+            <button id="btn-bays">Servo bay template</button>
+            <span class="hint">1:1 SVG: print at 100 % and cut the bays by hand</span>
+          </div>
+        </section>
+        <section class="card" id="steps-card" hidden>
+          <h2>Cutting steps <span class="pill" id="steps-pill"></span></h2>
+          <ol class="steps" id="job-notes"></ol>
+          <div class="step-list" id="job-steps"></div>
+          <div class="row wrap">
+            <button id="btn-guide" class="primary">Print cutting guide</button>
+            <button id="btn-export-all">Export all cuts</button>
+            <button id="btn-plans">Plans &amp; formers (SVG)</button>
+            <button id="btn-stl">3D model (STL)</button>
+          </div>
+        </section>
+        <section class="card">
+          <h2>Foam block</h2>
+          <p class="hint" id="block-hint"></p>
+        </section>
+        <section class="card">
+          <details>
+            <summary>G-code</summary>
+            <pre class="gcode" id="gcode-view"></pre>
+          </details>
+        </section>
+      </div>
+
+      <div class="panel" data-panel="device" hidden>
+        <section class="card">
+          <h2>Connection <span class="pill" id="state-pill">Disconnected</span></h2>
+          <div class="preset-row">
+            <label for="sel-port">Port</label>
+            <select id="sel-port"></select>
+            <button class="icon" id="btn-ports" title="Refresh ports">↻</button>
+          </div>
+          <div class="row">
+            <button id="btn-connect" class="primary">Connect</button>
+            <span class="hint" id="conn-hint"></span>
+          </div>
+        </section>
+        <section class="card">
+          <h2>Position <span class="muted">work coordinates</span></h2>
+          <div class="dro" id="dro"></div>
+        </section>
+        <section class="card">
+          <h2>Jog</h2>
+          <div class="jog-mode" role="radiogroup" aria-label="Carriages to move">
+            <label><input type="radio" name="jog-mode" value="both" checked> Both</label>
+            <label><input type="radio" name="jog-mode" value="xy"> XY only</label>
+            <label><input type="radio" name="jog-mode" value="uv"> UV only</label>
+          </div>
+          <div class="jog">
+            <div class="pad">
+              <button data-jog="0,1" title="Up">▲</button>
+              <button data-jog="-1,0" title="Towards the origin">◀</button>
+              <button data-jog="cancel" class="stopjog" title="Stop jog">■</button>
+              <button data-jog="1,0" title="Away from the origin">▶</button>
+              <button data-jog="0,-1" title="Down">▼</button>
+            </div>
+            <div class="jog-opts">
+              <label>Step
+                <select id="jog-step"><option>0.1</option><option>1</option><option selected>10</option><option>50</option></select> mm
+              </label>
+              <label>Speed <input id="jog-feed" type="number" min="1" value="600"> mm/min</label>
+            </div>
+          </div>
+          <div class="row wrap">
+            <button id="btn-home">Home</button>
+            <button id="btn-unlock">Unlock</button>
+            <button id="btn-zero" title="Make the current position the origin of the G-code">Set zero here</button>
+            <button id="btn-go-zero">Go to zero</button>
+          </div>
+          <div class="row">
+            <button id="btn-wire-on">Wire on</button>
+            <button id="btn-wire-off">Wire off</button>
+            <label class="inline">S <input id="wire-power" type="number" min="0" value="1000"></label>
+          </div>
+        </section>
+        <section class="card">
+          <h2>Job <span class="pill" id="job-pill">No job</span></h2>
+          <div class="progress"><div id="job-bar"></div></div>
+          <p class="hint" id="job-hint">Slice a part, then start it here.</p>
+          <div class="job-prompt" id="job-prompt" hidden role="alert">
+            <b>Waiting for you</b>
+            <span id="job-prompt-text"></span>
+            <span class="hint">Press Resume when done.</span>
+          </div>
+          <div class="row">
+            <button id="btn-start" class="primary">Start</button>
+            <button id="btn-pause">Pause</button>
+            <button id="btn-resume">Resume</button>
+            <button id="btn-stop" class="danger">Stop</button>
+          </div>
+        </section>
+        <section class="card">
+          <h2>Console</h2>
+          <div class="console" id="console" aria-live="polite"></div>
+          <form class="row" id="console-form">
+            <input id="console-input" type="text" placeholder="G-code or $ command" autocomplete="off" spellcheck="false">
+            <button type="submit">Send</button>
+          </form>
+        </section>
+      </div>
+
+      <footer class="sidebar-footer">
+        <div class="job-row" id="job-row" hidden>
+          <label for="sel-job">Cut</label>
+          <select id="sel-job"></select>
+        </div>
+        <div class="summary" id="summary">—</div>
+        <div class="row">
+          <button id="btn-export" class="primary">Export G-code</button>
+          <button id="btn-send">Send to device</button>
+        </div>
+      </footer>
+    </aside>
+  </main>
+
+  <dialog id="dlg-preset">
+    <form method="dialog" class="dialog">
+      <h2 id="dlg-preset-title">Settings</h2>
+      <div id="dlg-preset-form"></div>
+      <p class="hint" id="dlg-preset-hint"></p>
+      <div class="row end">
+        <button value="delete" id="dlg-preset-delete" class="danger-ghost">Delete preset</button>
+        <span class="grow"></span>
+        <button value="cancel" formnovalidate>Cancel</button>
+        <button value="saveas" id="dlg-preset-saveas">Save as preset…</button>
+        <button value="apply" class="primary">Use</button>
+      </div>
+    </form>
+  </dialog>
+
+  <dialog id="dlg-kerf">
+    <form method="dialog" class="dialog">
+      <h2>Kerf test</h2>
+      <p id="kerf-instructions"></p>
+      <div class="row end">
+        <button value="cancel">Close</button>
+        <button value="download">Download G-code</button>
+        <button value="send" class="primary">Send to device</button>
+      </div>
+    </form>
+  </dialog>
+
+  <dialog id="dlg-confirm">
+    <form method="dialog" class="dialog">
+      <h2 id="confirm-title">Start cutting?</h2>
+      <p id="confirm-text"></p>
+      <div class="row end">
+        <button value="cancel">Cancel</button>
+        <button value="ok" class="primary" id="confirm-ok">Start</button>
+      </div>
+    </form>
+  </dialog>
+
+  <dialog id="dlg-airfoils" class="wide">
+    <form method="dialog" class="dialog">
+      <h2>Airfoil database</h2>
+      <input type="search" id="foil-search" placeholder="Search: SD7037, glider, flying wing…" autocomplete="off" spellcheck="false" aria-label="Search airfoils">
+      <div class="chips" id="foil-cats" role="radiogroup" aria-label="Category"></div>
+      <div class="foil-list" id="foil-list"></div>
+      <p class="hint">Coordinates from the UIUC Airfoil Coordinates Database (M. Selig). NACA 4-digit sections are generated. Thickness and camber are in % of the chord.</p>
+      <div class="row end"><button value="cancel">Close</button></div>
+    </form>
+  </dialog>
+
+  <input type="file" id="file-project" accept=".json,.howi" hidden>
+  <input type="file" id="file-airfoil" accept=".dat,.txt" hidden>
+  <input type="file" id="file-drawing" accept=".svg,.dxf" hidden>
+</body>
+</html>

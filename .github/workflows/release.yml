@@ -1,0 +1,142 @@
+name: installers
+
+# Builds the installers on every change to the packaging (so they are known to work) and, for a
+# version tag (v0.1.0, ...), publishes them as a GitHub release:
+#   - Windows: open_HOWI-<version>-windows-setup.exe (Inno Setup) and a portable .zip
+#   - macOS (Apple silicon): open_HOWI-<version>-macos-arm64.dmg
+#   - Linux (x86-64): open_HOWI-<version>-linux-x86_64.tar.gz with install.sh
+#   - Python: the wheel and source package, for `pipx install`
+
+on:
+  push:
+    tags: ["v*"]
+  pull_request:
+    paths:
+      - "packaging/**"
+      - ".github/workflows/release.yml"
+      - "pyproject.toml"
+      - "src/openhowi/desktop.py"
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  app:
+    name: app (${{ matrix.name }})
+    runs-on: ${{ matrix.os }}
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - { os: windows-latest, name: windows }
+          - { os: macos-latest, name: macos-arm64 }
+          - { os: ubuntu-22.04, name: linux-x86_64 }
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+      - name: Install open_HOWI and PyInstaller
+        run: python -m pip install . "pyinstaller>=6.11,<7"
+      - name: Version
+        id: version
+        shell: bash
+        run: |
+          version=$(python -c "import openhowi; print(openhowi.__version__)")
+          if [[ "$GITHUB_REF" == refs/tags/v* && "${GITHUB_REF_NAME#v}" != "$version" ]]; then
+            echo "::error::tag $GITHUB_REF_NAME does not match the package version $version"; exit 1
+          fi
+          echo "version=$version" >> "$GITHUB_OUTPUT"
+      - name: Build the app
+        run: python -m PyInstaller --noconfirm --clean packaging/open_HOWI.spec
+      - name: Check the app works
+        shell: bash
+        run: |
+          if [ "$RUNNER_OS" = "macOS" ]; then exe=dist/open_HOWI.app/Contents/MacOS/open_HOWI
+          elif [ "$RUNNER_OS" = "Windows" ]; then exe=dist/open_HOWI/open_HOWI.exe
+          else exe=dist/open_HOWI/open_HOWI; fi
+          python packaging/smoke_test.py "$exe"
+
+      - name: Windows installer
+        if: runner.os == 'Windows'
+        shell: pwsh
+        run: |
+          if (-not (Test-Path "${env:ProgramFiles(x86)}\Inno Setup 6\ISCC.exe")) { choco install innosetup --no-progress -y }
+          & "${env:ProgramFiles(x86)}\Inno Setup 6\ISCC.exe" /DAppVersion=${{ steps.version.outputs.version }} packaging\windows\open_HOWI.iss
+          Compress-Archive -Path dist\open_HOWI -DestinationPath dist\open_HOWI-${{ steps.version.outputs.version }}-windows-portable.zip
+          New-Item -ItemType Directory -Force out | Out-Null
+          Move-Item dist\open_HOWI-*-windows-*.* out\
+      - name: macOS disk image
+        if: runner.os == 'macOS'
+        run: |
+          mkdir -p out
+          packaging/macos/make_dmg.sh out/open_HOWI-${{ steps.version.outputs.version }}-macos-arm64.dmg
+      - name: Linux archive
+        if: runner.os == 'Linux'
+        run: |
+          name=open_HOWI-${{ steps.version.outputs.version }}-linux-x86_64
+          mkdir -p "stage/$name" out
+          cp -R dist/open_HOWI "stage/$name/"
+          cp packaging/linux/install.sh "stage/$name/"
+          cp packaging/icon-256.png "stage/$name/open_HOWI.png"
+          tar -C stage -czf "out/$name.tar.gz" "$name"
+      - uses: actions/upload-artifact@v4
+        with:
+          name: open_HOWI-${{ matrix.name }}
+          path: out/*
+          if-no-files-found: error
+
+  python:
+    name: python package
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+      - run: python -m pip install build
+      - run: python -m build --outdir out
+      - name: Check the wheel installs and runs
+        run: |
+          python -m venv /tmp/venv
+          /tmp/venv/bin/pip install out/*.whl
+          /tmp/venv/bin/openhowi naca 2412 -o /tmp/naca.dat
+          /tmp/venv/bin/openhowi airfoils --export sd7037 -o /tmp/sd7037.dat
+      - uses: actions/upload-artifact@v4
+        with:
+          name: open_HOWI-python
+          path: out/*
+          if-no-files-found: error
+
+  release:
+    name: publish the release
+    if: startsWith(github.ref, 'refs/tags/v')
+    needs: [app, python]
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/download-artifact@v4
+        with:
+          path: out
+          merge-multiple: true
+      - name: Create the GitHub release
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          ls -la out
+          cat > notes.md <<'EOF'
+          ## Download
+
+          | Your computer | File | How |
+          |---|---|---|
+          | Windows 10/11 | `open_HOWI-…-windows-setup.exe` | Run it and follow the steps; start open_HOWI from the Start menu. Windows may warn about an unknown publisher: *More info → Run anyway*. A portable `.zip` is there too. |
+          | Mac with Apple silicon | `open_HOWI-…-macos-arm64.dmg` | Open it and drag open_HOWI to Applications. The first time, right-click it and choose *Open* (the app is not signed by Apple). |
+          | Linux (x86-64) | `open_HOWI-…-linux-x86_64.tar.gz` | Unpack it and run `./install.sh`; open_HOWI appears in your applications menu. |
+          | Anything with Python 3.11+ (Intel Macs, Raspberry Pi, …) | `open_howi-…-py3-none-any.whl` | `pipx install <the .whl file>`, then `open-howi` (or `openhowi gui`). |
+
+          open_HOWI opens in your web browser and runs on your computer only. Close its window (or press *Quit* in the app) to stop it.
+          EOF
+          gh release create "$GITHUB_REF_NAME" out/* --repo "$GITHUB_REPOSITORY" --title "open_HOWI $GITHUB_REF_NAME" \
+            --notes-file notes.md --generate-notes

@@ -1,0 +1,324 @@
+{
+  "version": 1,
+  "machine_preset": "Generic 4-axis, 1000 mm wire (XYUV)",
+  "machine": {
+    "tower_distance": 1000.0,
+    "x_travel": 600.0,
+    "y_travel": 300.0,
+    "axis_letters": "XYUV",
+    "travel_feed": 800.0,
+    "feed_mode": "inverse-time",
+    "decimals": 3,
+    "baud": 115200
+  },
+  "material_preset": "EPS white, 15-20 kg/m\u00b3",
+  "material": {
+    "cut_feed": 200.0,
+    "kerf": 1.2,
+    "kerf_half_speed": 1.7,
+    "wire_power": null,
+    "preheat": 3.0
+  },
+  "part": {
+    "type": "nest",
+    "items": [
+      {
+        "source": {
+          "title": "Wing",
+          "part": {
+            "type": "wing",
+            "root_airfoil": "naca2412",
+            "tip_airfoil": null,
+            "root_chord": 220.0,
+            "tip_chord": 160.0,
+            "span": 600.0,
+            "sweep": 20.0,
+            "washout": 1.0,
+            "washout_pivot": 0.25,
+            "tip_offset_y": 0.0,
+            "sheeting_top": 0.0,
+            "sheeting_bottom": 0.0,
+            "le_stock": 0.0,
+            "te_stock": 0.0,
+            "te_thickness": 0.0,
+            "spars": [],
+            "channels": [],
+            "joiners": [],
+            "bays": [],
+            "kerf_root_override": null,
+            "kerf_tip_override": null,
+            "points_per_surface": 80,
+            "planform": "panel",
+            "plan_view": null,
+            "wing_stations": [
+              {
+                "x": 0.0,
+                "chord": 250.0,
+                "le": 0.0,
+                "twist": 0.0,
+                "height": 0.0
+              },
+              {
+                "x": 350.0,
+                "chord": 225.0,
+                "le": 12.0,
+                "twist": 0.5,
+                "height": 0.0
+              },
+              {
+                "x": 600.0,
+                "chord": 120.0,
+                "le": 70.0,
+                "twist": 2.0,
+                "height": 15.0
+              }
+            ],
+            "curve": "smooth",
+            "line": 25.0,
+            "panels": 0,
+            "tolerance": 2.0,
+            "max_panel": null,
+            "min_panel": 40.0,
+            "controls": [],
+            "job": 1,
+            "pair": false,
+            "nest_gap": 8.0
+          }
+        },
+        "job": 1,
+        "copies": 1,
+        "opposite": false
+      },
+      {
+        "source": {
+          "title": "Wing",
+          "part": {
+            "type": "wing",
+            "root_airfoil": "naca2412",
+            "tip_airfoil": null,
+            "root_chord": 220.0,
+            "tip_chord": 160.0,
+            "span": 600.0,
+            "sweep": 20.0,
+            "washout": 1.0,
+            "washout_pivot": 0.25,
+            "tip_offset_y": 0.0,
+            "sheeting_top": 0.0,
+            "sheeting_bottom": 0.0,
+            "le_stock": 0.0,
+            "te_stock": 0.0,
+            "te_thickness": 0.0,
+            "spars": [],
+            "channels": [],
+            "joiners": [],
+            "bays": [],
+            "kerf_root_override": null,
+            "kerf_tip_override": null,
+            "points_per_surface": 80,
+            "planform": "panel",
+            "plan_view": null,
+            "wing_stations": [
+              {
+                "x": 0.0,
+                "chord": 250.0,
+                "le": 0.0,
+                "twist": 0.0,
+                "height": 0.0
+              },
+              {
+                "x": 350.0,
+                "chord": 225.0,
+                "le": 12.0,
+                "twist": 0.5,
+                "height": 0.0
+              },
+              {
+                "x": 600.0,
+                "chord": 120.0,
+                "le": 70.0,
+                "twist": 2.0,
+                "height": 15.0
+              }
+            ],
+            "curve": "smooth",
+            "line": 25.0,
+            "panels": 0,
+            "tolerance": 2.0,
+            "max_panel": null,
+            "min_panel": 40.0,
+            "controls": [],
+            "job": 1,
+            "pair": false,
+            "nest_gap": 8.0
+          }
+        },
+        "job": 1,
+        "copies": 1,
+        "opposite": true
+      },
+      {
+        "source": {
+          "title": "Stab",
+          "part": {
+            "type": "wing",
+            "root_airfoil": "naca0009",
+            "tip_airfoil": null,
+            "root_chord": 130.0,
+            "tip_chord": 90.0,
+            "span": 600.0,
+            "sweep": 25.0,
+            "washout": 0.0,
+            "washout_pivot": 0.25,
+            "tip_offset_y": 0.0,
+            "sheeting_top": 0.0,
+            "sheeting_bottom": 0.0,
+            "le_stock": 0.0,
+            "te_stock": 0.0,
+            "te_thickness": 0.0,
+            "spars": [],
+            "channels": [],
+            "joiners": [],
+            "bays": [],
+            "kerf_root_override": null,
+            "kerf_tip_override": null,
+            "points_per_surface": 80,
+            "planform": "panel",
+            "plan_view": null,
+            "wing_stations": [
+              {
+                "x": 0.0,
+                "chord": 250.0,
+                "le": 0.0,
+                "twist": 0.0,
+                "height": 0.0
+              },
+              {
+                "x": 350.0,
+                "chord": 225.0,
+                "le": 12.0,
+                "twist": 0.5,
+                "height": 0.0
+              },
+              {
+                "x": 600.0,
+                "chord": 120.0,
+                "le": 70.0,
+                "twist": 2.0,
+                "height": 15.0
+              }
+            ],
+            "curve": "smooth",
+            "line": 25.0,
+            "panels": 0,
+            "tolerance": 2.0,
+            "max_panel": null,
+            "min_panel": 40.0,
+            "controls": [
+              {
+                "name": "elevator",
+                "position": 70.0,
+                "position_tip": null,
+                "hinge": "center",
+                "bevel": 20.0,
+                "start": null,
+                "end": null
+              }
+            ],
+            "job": 1,
+            "pair": false,
+            "nest_gap": 8.0
+          }
+        },
+        "job": 1,
+        "copies": 1,
+        "opposite": false
+      },
+      {
+        "source": {
+          "title": "Stab",
+          "part": {
+            "type": "wing",
+            "root_airfoil": "naca0009",
+            "tip_airfoil": null,
+            "root_chord": 130.0,
+            "tip_chord": 90.0,
+            "span": 600.0,
+            "sweep": 25.0,
+            "washout": 0.0,
+            "washout_pivot": 0.25,
+            "tip_offset_y": 0.0,
+            "sheeting_top": 0.0,
+            "sheeting_bottom": 0.0,
+            "le_stock": 0.0,
+            "te_stock": 0.0,
+            "te_thickness": 0.0,
+            "spars": [],
+            "channels": [],
+            "joiners": [],
+            "bays": [],
+            "kerf_root_override": null,
+            "kerf_tip_override": null,
+            "points_per_surface": 80,
+            "planform": "panel",
+            "plan_view": null,
+            "wing_stations": [
+              {
+                "x": 0.0,
+                "chord": 250.0,
+                "le": 0.0,
+                "twist": 0.0,
+                "height": 0.0
+              },
+              {
+                "x": 350.0,
+                "chord": 225.0,
+                "le": 12.0,
+                "twist": 0.5,
+                "height": 0.0
+              },
+              {
+                "x": 600.0,
+                "chord": 120.0,
+                "le": 70.0,
+                "twist": 2.0,
+                "height": 15.0
+              }
+            ],
+            "curve": "smooth",
+            "line": 25.0,
+            "panels": 0,
+            "tolerance": 2.0,
+            "max_panel": null,
+            "min_panel": 40.0,
+            "controls": [
+              {
+                "name": "elevator",
+                "position": 70.0,
+                "position_tip": null,
+                "hinge": "center",
+                "bevel": 20.0,
+                "start": null,
+                "end": null
+              }
+            ],
+            "job": 1,
+            "pair": false,
+            "nest_gap": 8.0
+          }
+        },
+        "job": 1,
+        "copies": 1,
+        "opposite": true
+      }
+    ],
+    "gap": 8.0,
+    "max_height": 90.0
+  },
+  "placement": {
+    "root_side": "xy",
+    "root_offset": 200.0,
+    "x_margin": 25.0,
+    "y_offset": 20.0
+  },
+  "title": "Glider block"
+}

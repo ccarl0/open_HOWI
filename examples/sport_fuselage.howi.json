@@ -1,0 +1,107 @@
+{
+  "version": 1,
+  "machine_preset": "Generic 4-axis, 1000 mm wire (XYUV)",
+  "machine": {
+    "tower_distance": 1000.0,
+    "x_travel": 600.0,
+    "y_travel": 300.0,
+    "axis_letters": "XYUV",
+    "travel_feed": 800.0,
+    "feed_mode": "inverse-time",
+    "decimals": 3,
+    "baud": 115200
+  },
+  "material_preset": "EPS white, 15-20 kg/m\u00b3",
+  "material": {
+    "cut_feed": 200.0,
+    "kerf": 1.2,
+    "kerf_half_speed": 1.7,
+    "wire_power": null,
+    "preheat": 3.0
+  },
+  "part": {
+    "type": "fuselage",
+    "source": "stations",
+    "stations": [
+      {
+        "x": 0.0,
+        "top": 22.0,
+        "bottom": -22.0,
+        "width": 44.0,
+        "round_top": 100.0,
+        "round_bottom": 100.0
+      },
+      {
+        "x": 30.0,
+        "top": 34.0,
+        "bottom": -30.0,
+        "width": 58.0,
+        "round_top": 100.0,
+        "round_bottom": 90.0
+      },
+      {
+        "x": 120.0,
+        "top": 48.0,
+        "bottom": -38.0,
+        "width": 72.0,
+        "round_top": 80.0,
+        "round_bottom": 50.0
+      },
+      {
+        "x": 250.0,
+        "top": 44.0,
+        "bottom": -34.0,
+        "width": 64.0,
+        "round_top": 80.0,
+        "round_bottom": 50.0
+      },
+      {
+        "x": 400.0,
+        "top": 30.0,
+        "bottom": -10.0,
+        "width": 34.0,
+        "round_top": 70.0,
+        "round_bottom": 60.0
+      },
+      {
+        "x": 500.0,
+        "top": 22.0,
+        "bottom": 6.0,
+        "width": 16.0,
+        "round_top": 60.0,
+        "round_bottom": 60.0
+      }
+    ],
+    "side_view": null,
+    "top_view": null,
+    "round_top": 100.0,
+    "round_bottom": 100.0,
+    "saddles": [
+      {
+        "airfoil": "clarky",
+        "position": 110.0,
+        "chord": 180.0,
+        "height": 44.0,
+        "incidence": 1.0,
+        "side": "top"
+      }
+    ],
+    "method": "two_view",
+    "segment_length": 150.0,
+    "halves": false,
+    "wall": 0.0,
+    "spare": 5.0,
+    "skin": 1.5,
+    "points": 64,
+    "job": 1,
+    "kerf_root_override": null,
+    "kerf_tip_override": null
+  },
+  "placement": {
+    "root_side": "xy",
+    "root_offset": 30.0,
+    "x_margin": 20.0,
+    "y_offset": 10.0
+  },
+  "title": "Sport fuselage"
+}
