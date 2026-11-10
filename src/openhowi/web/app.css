@@ -277,6 +277,10 @@ dialog::backdrop { background: rgb(10 14 20 / 45%); }
 .drawing-box button { align-self: flex-start; }
 .drawing-box.empty .name { font-weight: 400; color: var(--muted); }
 .thumbs path.skin { fill: none; stroke: var(--muted); stroke-dasharray: 3 2; }
+.thumbs path.mark { fill: color-mix(in srgb, var(--accent) 55%, transparent); stroke: var(--accent); }
+.thumbs path.joint { fill: none; stroke: var(--text); stroke-dasharray: 2 2; }
+.thumbs figure.wide { flex: 2; }
+.button-row { display: flex; flex-wrap: wrap; gap: 6px; }
 
 /* List fields (spars, servo channels) ------------------------------------------------- */
 .list-field { display: flex; flex-direction: column; gap: 8px; }

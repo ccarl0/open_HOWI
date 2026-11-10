@@ -83,6 +83,38 @@ class Airfoil:
         return "\n".join(lines) + "\n"
 
 
+def thicken_te(airfoil: Airfoil, thickness: float) -> Airfoil:
+    """The airfoil with its trailing edge opened to at least ``thickness`` (a fraction of the chord).
+
+    Each surface moves away from the chord line in proportion to the distance from the leading edge,
+    so the nose is untouched and the section thickens smoothly towards the back. A foam trailing
+    edge thinner than the kerf would melt away.
+    """
+    foil = airfoil.normalized()
+    gap = foil.points[0][1] - foil.points[-1][1]
+    extra = thickness - gap
+    if extra <= 1e-9:
+        return airfoil
+    le = foil.le_index
+    points = tuple(
+        (x, y + (extra / 2 if i <= le else -extra / 2) * x if i != le else y) for i, (x, y) in enumerate(foil.points)
+    )
+    return Airfoil(airfoil.name, points)
+
+
+def blend(a: Airfoil, b: Airfoil, t: float, n_per_surface: int = 120) -> Airfoil:
+    """The section ``t`` of the way from ``a`` to ``b`` (0: ``a``, 1: ``b``), as a wing tapering from one
+    airfoil to the other has it in between."""
+    if t <= 1e-9 or a.points == b.points:
+        return a
+    if t >= 1 - 1e-9:
+        return b
+    pa = a.normalized().resampled(n_per_surface).points
+    pb = b.normalized().resampled(n_per_surface).points
+    points = tuple((xa + (xb - xa) * t, ya + (yb - ya) * t) for (xa, ya), (xb, yb) in zip(pa, pb))
+    return Airfoil(f"{a.name}/{b.name} {t:.0%}", points)
+
+
 def _canonical(points: list[Point]) -> tuple[Point, ...]:
     pts = dedupe(points)
     if signed_area(pts) < 0.0:  # TE -> lower -> LE -> upper; flip to Selig order

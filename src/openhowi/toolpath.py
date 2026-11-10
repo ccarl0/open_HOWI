@@ -104,6 +104,9 @@ class WingLayout:
     tip_holes: list[list[Point]] = field(default_factory=list)
     bays: list[tuple[float, float, list[Point], list[Point]]] = field(default_factory=list)
     """Servo bays (cut by hand): span positions of both ends and the pocket's section at each, for display."""
+    root_pieces: list[tuple[list[Point], list[list[Point]]]] = field(default_factory=list)
+    """Finished pieces at the root (the core, or main panel and control surface) with their holes."""
+    tip_pieces: list[tuple[list[Point], list[list[Point]]]] = field(default_factory=list)
 
 
 def span_positions(span: float, machine: Machine, placement: Placement) -> tuple[float, float]:
@@ -127,8 +130,8 @@ def layout_wing(wing: WingPanel, machine: Machine, placement: Placement) -> Wing
     d = machine.tower_distance
     z_root, z_tip = span_positions(wing.span, machine, placement)
     sections = wing.sections()
-    root_cut = cut_path(sections.root, sections.root_holes, wing.root_kerf)
-    tip_cut = cut_path(sections.tip, sections.tip_holes, wing.tip_kerf)
+    root_cut = cut_path(sections.root, sections.root_holes, wing.root_kerf, sections.root_hinge)
+    tip_cut = cut_path(sections.tip, sections.tip_holes, wing.tip_kerf, sections.tip_hinge)
     xy, uv = project_to_towers(root_cut, z_root, tip_cut, z_tip, d)
 
     # Mirror X so the trailing edge faces the origin and the wire enters from behind it.
@@ -155,6 +158,8 @@ def layout_wing(wing: WingPanel, machine: Machine, placement: Placement) -> Wing
         [to_machine(h) for h in sections.outlines(tip=False)],
         [to_machine(h) for h in sections.outlines(tip=True)],
         bays,
+        [(to_machine(ring), [to_machine(h) for h in holes]) for ring, holes in sections.pieces(tip=False)],
+        [(to_machine(ring), [to_machine(h) for h in holes]) for ring, holes in sections.pieces(tip=True)],
     )
 
 

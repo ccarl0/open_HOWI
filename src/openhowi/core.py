@@ -24,7 +24,7 @@ from __future__ import annotations
 import bisect
 import itertools
 import math
-from collections.abc import Sequence
+from collections.abc import Callable, Sequence
 from dataclasses import dataclass, field
 
 from .airfoil import Airfoil
@@ -35,6 +35,8 @@ MIN_WEB = 1.0
 CIRCLE_POINTS = 32
 """Points around a round hole (the same at root and tip)."""
 HOLE_SHAPES = ("round", "rect")
+HINGES = ("top", "bottom", "center")
+CONTROL_NAMES = ("aileron", "flap", "flaperon", "elevator", "elevon", "rudder")
 
 
 class CoreError(ValueError):
@@ -173,6 +175,144 @@ class ServoBay:
 
 
 @dataclass(frozen=True)
+class ControlSurface:
+    """An aileron, flap or elevator cut off the back of the panel in the same cut.
+
+    The wire runs down the hinge line and round a V-shaped wedge in front of the
+    surface, so the two pieces come apart ready to hinge: with tape on the top or
+    bottom surface, or with pinned or CA hinges on the centre line.
+    """
+
+    position: float = 75.0
+    """Hinge line at the root, % of the chord from the leading edge."""
+    position_tip: float | None = None
+    """Hinge line at the tip (% of the tip chord); defaults to the root position."""
+    name: str = "aileron"
+    """What it is, for the instructions: one of ``CONTROL_NAMES``."""
+    hinge: str = "top"
+    """"top" or "bottom": the surface swings about that surface (a tape hinge); "center": about the middle."""
+    bevel: float = 25.0
+    """Angle of the V cut in front of the surface (degrees): how far it can swing towards the V's side
+    (down for a top hinge, up for a bottom hinge, both ways for a centre hinge). 0: a straight cut."""
+    start: float | None = None
+    """Where the surface starts, mm from the wing root (blank: at the root). The wing is split into
+    panels there, since the wire cuts the whole length of a panel."""
+    end: float | None = None
+    """Where it ends, mm from the wing root (blank: at the tip)."""
+
+    def __post_init__(self) -> None:
+        _check_position("position", self.position)
+        _check_position("position_tip", self.position_tip)
+        if self.hinge not in HINGES:
+            raise ValueError('hinge must be "top", "bottom" or "center"')
+        if self.name not in CONTROL_NAMES:
+            raise ValueError(f"the control surface must be one of: {', '.join(CONTROL_NAMES)}")
+        if not 0 <= self.bevel <= 60:
+            raise ValueError("bevel must be between 0 and 60 degrees")
+        if (self.start is not None and self.start < 0) or (self.end is not None and self.end <= 0):
+            raise ValueError("the control surface must start at or after the root")
+        if self.start is not None and self.end is not None and self.end < self.start + 10:
+            raise ValueError("the control surface must be at least 10 mm long")
+
+    def at(self, tip: bool) -> float:
+        return self.position_tip if tip and self.position_tip is not None else self.position
+
+    def describe(self) -> str:
+        bevel = f", {self.bevel:g} deg V" if self.bevel else ", straight cut"
+        return f"{'centre' if self.hinge == 'center' else self.hinge} hinge{bevel}"
+
+
+def _unit(a: Point, b: Point) -> Point | None:
+    dx, dy = b[0] - a[0], b[1] - a[1]
+    length = math.hypot(dx, dy)
+    return None if length < 1e-9 else (dx / length, dy / length)
+
+
+def _cross(a: Point, b: Point, c: Point) -> float:
+    return (b[0] - a[0]) * (c[1] - a[1]) - (b[1] - a[1]) * (c[0] - a[0])
+
+
+def _wedge_path(h: Point, m: Point, f: Point, d: float) -> tuple[Point, Point, Point]:
+    """Wire path inside a V-shaped wedge of waste: apex ``h``, main face ``h``-``m``, bevel ``h``-``f``.
+
+    Returns the apex of the wedge shrunk by ``d`` (half the kerf) and points just past ``m`` and
+    ``f``, outside the foam. Where the wedge is narrower than the kerf all the way, the three
+    points coincide: one straight cut down its middle.
+    """
+    u = _unit(h, m)
+    assert u is not None
+    v = _unit(h, f)
+    length_m, length_f = math.dist(h, m), math.dist(h, f)
+    if v is None or math.dist(m, f) < 1e-6:
+        q = (h[0] + u[0] * (length_m + 2 * d), h[1] + u[1] * (length_m + 2 * d))
+        return q, q, q
+
+    def shifted(e: Point, toward: Point) -> Point:
+        n = (-e[1], e[0])
+        if (toward[0] - h[0]) * n[0] + (toward[1] - h[1]) * n[1] < 0:
+            n = (e[1], -e[0])
+        return (h[0] + n[0] * d, h[1] + n[1] * d)
+
+    a1, a2 = shifted(u, f), shifted(v, m)
+    p1 = (a1[0] + u[0] * (length_m + 2 * d), a1[1] + u[1] * (length_m + 2 * d))
+    p2 = (a2[0] + v[0] * (length_f + 2 * d), a2[1] + v[1] * (length_f + 2 * d))
+    det = u[0] * v[1] - u[1] * v[0]
+    s = ((a2[0] - a1[0]) * v[1] - (a2[1] - a1[1]) * v[0]) / det
+    apex = (a1[0] + u[0] * s, a1[1] + u[1] * s)
+    if _cross(p1, p2, apex) * _cross(p1, p2, h) <= 0:
+        mid = ((p1[0] + p2[0]) / 2, (p1[1] + p2[1]) / 2)
+        return mid, mid, mid
+    return apex, p1, p2
+
+
+@dataclass(frozen=True)
+class HingeCut:
+    """Where a control surface comes off one face: the waste wedge(s) between the two pieces.
+
+    ``h`` is the apex of the V (the hinge point), ``m`` the far end of the main panel's back face
+    and ``f`` the foot of the surface's bevel. A centre hinge has two wedges: ``t``-``h``-``fu``
+    above and ``h``-``m``-``f`` below.
+    """
+
+    kind: str
+    h: Point
+    m: Point
+    f: Point
+    t: Point | None = None
+    fu: Point | None = None
+    tags: tuple[str, str, str, str] = ("hinge", "hinge_m", "hinge", "hinge_f")
+    """Section points bounding the pieces: main panel top and bottom, surface front top and bottom."""
+    x: float = 0.0
+    """Hinge line, mm from the leading edge (section frame)."""
+
+    def moved(self, fn: Callable[[list[Point]], list[Point]]) -> HingeCut:
+        pts = fn([self.h, self.m, self.f, self.t or self.h, self.fu or self.h])
+        return HingeCut(self.kind, pts[0], pts[1], pts[2], pts[3] if self.t else None,
+                        pts[4] if self.fu else None, self.tags, self.x)  # fmt: skip
+
+    def straight(self) -> bool:
+        return math.dist(self.m, self.f) < 1e-6
+
+    def waste(self) -> list[Point]:
+        """The foam the cut removes between the pieces (a segment for a straight cut)."""
+        if self.kind == "center":
+            assert self.t is not None and self.fu is not None
+            return [self.t, self.m] if self.straight() else [self.t, self.m, self.f, self.h, self.fu]
+        return [self.h, self.m] if self.straight() else [self.h, self.m, self.f]
+
+    def detour(self, kerf: float) -> list[Point]:
+        """The wire's path off the outline and back, with the cuts moved half a kerf into the waste."""
+        d = kerf / 2
+        if self.kind == "center":
+            assert self.t is not None and self.fu is not None
+            au, tu, fu = _wedge_path(self.h, self.t, self.fu, d)
+            al, ml, fl = _wedge_path(self.h, self.m, self.f, d)
+            return [tu, ml, fl, al, au, fu]
+        apex, p1, p2 = _wedge_path(self.h, self.m, self.f, d)
+        return [apex, p1, p2, apex]
+
+
+@dataclass(frozen=True)
 class HoleShape:
     """The section of a spanwise hole in one face, reached through a slit from one surface."""
 
@@ -247,6 +387,8 @@ class CoreSpec:
     joiners: tuple[Joiner, ...] = ()
     """Listed here for completeness; their holes depend on the whole panel, so the wing
     resolves them per face and hands them to ``core_runs`` as ``holes``."""
+    control: ControlSurface | None = None
+    """A control surface cut off along a hinge line."""
 
     def __post_init__(self) -> None:
         for name in ("sheeting_top", "sheeting_bottom", "le_stock", "te_stock"):
@@ -300,6 +442,8 @@ class CoreRuns:
     le_cutback: float = 0.0
     order: tuple[tuple[str, ...], tuple[str, ...]] = ((), ())
     """Slots and slits on the top and bottom surface, front to back. Root and tip must agree."""
+    hinge: HingeCut | None = None
+    """Where a control surface comes off (section frame)."""
 
 
 def _monotone(points: list[Point], decreasing: bool) -> list[Point]:
@@ -474,6 +618,14 @@ def core_runs(
         if floor_bottom is not None:
             bottom = min(y_lo(xl), y_lo(xr), y_lo((xl + xr) / 2)) - 10.0
             obstacles.append(([(xl, bottom), (xr, bottom), (xr, floor_bottom), (xl, floor_bottom)], label))
+    if spec.control is not None:
+        result.hinge = _hinge(spec.control, chord, where, tip, start, end, y_up, y_lo, features)
+        waste = result.hinge.waste()
+        name = f"the control surface hinge ({spec.control.at(tip):g} % of the {chord:g} mm {where} chord)"
+        for other, other_label in obstacles:
+            if outline_gap(waste, other) < MIN_WEB:
+                raise CoreError(f"{name} is too close to {other_label}")
+        obstacles.append((waste, name))
     for hole in all_holes:
         label = hole.label
         yc = hole.y if hole.y is not None else (y_up(hole.x) + y_lo(hole.x)) / 2 + hole.offset
@@ -525,6 +677,12 @@ def core_runs(
                     Run("corner", surface_index, [(far, floor)]),
                 ]
                 pending_skip = False
+            elif kind == "split":
+                cuts = data[0] if increasing else list(reversed(data[0]))  # type: ignore[index]
+                for x_cut, tag in cuts:
+                    piece, curve = _split(curve, x_cut, y)
+                    result.runs.append(Run("curve", surface_index, piece, pending_skip, tag=tag))
+                    pending_skip = True
             else:
                 piece, curve = _split(curve, near, y)
                 result.runs.append(Run("curve", surface_index, piece, pending_skip, tag=data[0]))  # type: ignore[index]
@@ -535,6 +693,77 @@ def core_runs(
     # A plain leading edge: the lower surface starts on the upper surface's last point.
     build(1, lower, y_lo, not spec.sheeted and spec.le_stock == 0)
     return result
+
+
+def _hinge(
+    control: ControlSurface,
+    chord: float,
+    where: str,
+    tip: bool,
+    start: float,
+    end: float,
+    y_up: _Curve,
+    y_lo: _Curve,
+    features: tuple[list[tuple[float, float, str, object]], list[tuple[float, float, str, object]]],
+) -> HingeCut:
+    """The control surface's hinge cut in one face, with its split points added to the surface features."""
+    position = control.at(tip)
+    label = f"the control surface hinge ({position:g} % of the {chord:g} mm {where} chord)"
+    xh = position / 100.0 * chord
+    if xh <= start + 2 * MIN_WEB or xh >= end - 2 * MIN_WEB:
+        raise CoreError(f"{label} is outside the core")
+    yu, yl = y_up(xh), y_lo(xh)
+    if yu - yl < 2 * MIN_WEB:
+        raise CoreError(f"the core is only {yu - yl:.1f} mm thick at {label}: move the hinge forward")
+    tan_b = math.tan(math.radians(control.bevel))
+
+    def foot(y0: float, upper: bool) -> float:
+        """Where a bevel from (xh, y0), leaning back by the bevel angle, comes out of a surface."""
+        if tan_b == 0:
+            return xh
+        curve, sign = (y_up, 1.0) if upper else (y_lo, -1.0)
+
+        def gap(x: float) -> float:
+            return sign * (curve(x) - (y0 + sign * (x - xh) / tan_b))
+
+        prev = xh
+        for k in range(1, 201):
+            x = xh + (end - xh) * k / 200
+            if gap(x) <= 0:
+                found = _crossing(gap, prev, x)
+                if found < end - MIN_WEB:
+                    return found
+                break
+            prev = x
+        raise CoreError(
+            f"the {control.bevel:g} deg V at {label} runs out of the back of the core: make it smaller or move "
+            "the hinge forward"
+        )
+
+    def add(surface: int, cuts: list[tuple[float, str]]) -> None:
+        first: dict[float, str] = {}
+        for x, tag in cuts:  # one split per x: a straight cut has a single one
+            first.setdefault(x, tag)
+        ordered = sorted(first.items())
+        features[surface].append((ordered[0][0], ordered[-1][0], "split", (ordered, label)))
+
+    if control.hinge == "center":
+        ym = (yu + yl) / 2
+        xu, xl = foot(ym, True), foot(ym, False)
+        add(0, [(xh, "hinge"), (xu, "hinge_fu")])
+        add(1, [(xh, "hinge_m"), (xl, "hinge_f")])
+        tags = ("hinge", "hinge_m", "hinge_fu" if xu > xh else "hinge", "hinge_f" if xl > xh else "hinge_m")
+        return HingeCut("center", (xh, ym), (xh, yl), (xl, y_lo(xl)), (xh, yu), (xu, y_up(xu)), tags, xh)
+    top = control.hinge == "top"
+    xf = foot(yu if top else yl, not top)
+    far = "hinge_f" if xf > xh else "hinge_m"
+    if top:
+        add(0, [(xh, "hinge")])
+        add(1, [(xh, "hinge_m"), (xf, "hinge_f")])
+        return HingeCut("top", (xh, yu), (xh, yl), (xf, y_lo(xf)), tags=("hinge", "hinge_m", "hinge", far), x=xh)
+    add(1, [(xh, "hinge")])
+    add(0, [(xh, "hinge_m"), (xf, "hinge_f")])
+    return HingeCut("bottom", (xh, yl), (xh, yu), (xf, y_up(xf)), tags=("hinge_m", "hinge", far, "hinge"), x=xh)
 
 
 def run_counts(section: CoreRuns, n_per_surface: int) -> list[int]:

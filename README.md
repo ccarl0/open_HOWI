@@ -13,12 +13,36 @@ setups also depend on an old PC with a **parallel (LPT) port** that sends step/d
 signals straight to the stepper drivers. Modern computers don't have that port, and the
 old machines that do are getting harder to keep running.
 
+Others buy **DevWing Foam 2** (about 70 € a year, or 175 € for a lifetime licence) for its wing
+features. open_HOWI covers the same ground for free (see the comparison below).
+
 open_HOWI is a free alternative that:
 
 - runs on any current computer (Linux, Windows, macOS, or a Raspberry Pi next to the machine);
 - talks to the machine over **USB** through a cheap GRBL-style controller board, so the
   timing-critical step pulses come from the microcontroller, not from the PC;
 - writes plain, readable G-code that other controllers (LinuxCNC, etc.) can run too.
+
+| Wing CAM feature | open_HOWI |
+|---|---|
+| Airfoil `.dat` files | Selig and Lednicer, plus a built-in database of 68 model airfoils and NACA 4-digit sections |
+| DXF import | DXF and SVG, for 2D shapes, fuselage views and wing planforms |
+| Wing plan from an image | Trace the plan in a drawing program and load the outline: the wing is cut to it |
+| Kerf settings | Per material, at full and half speed, worked out for each end of the panel; a kerf test cut |
+| Washout, sweep, taper | Yes |
+| Dihedral | Tip height offset, height per station, joiner holes angled for the dihedral |
+| Spars | Any number of spar-cap slots, top and/or bottom, straight from root to tip |
+| Ailerons | Ailerons, flaps and elevators cut off in the same cut, with a V for the hinge |
+| Trailing-edge thickness | Yes, plus LE/TE stock and sheeting allowance |
+| Lightening holes | Round spanwise holes (the servo channels) reached through a slit; holes in 2D shapes |
+| Elliptical and curved wings | Split automatically into straight panels within a tolerance |
+| Nesting | Both hands, or several wing panels and 2D shapes, cut from one block in one go |
+| G93 inverse-time feed | Yes (the default) |
+| Cutting simulation | Live 3D preview, playback, and a built-in GRBL simulator |
+| Machine control | Built in: USB to GRBL, jog, zero, start/pause/stop |
+| Price, systems | Free (GPL-3.0); Linux, Windows, macOS |
+
+Not there yet: rotating a swept panel in the block ("rotate planform").
 
 ## The app
 
@@ -32,7 +56,7 @@ the `openhowi` process. It works offline.
 
 | Tab | What it does |
 |---|---|
-| **Prepare** | Choose a **machine** and a **material** preset, then set up the part: a **wing panel** (root/tip airfoils from the built-in database, NACA or any `.dat` file, chords, span, sweep, washout, sheeting allowance, LE/TE stock, spar slots, servo channels, joiner holes and servo bays), a **fuselage** (stations or side/top drawings, cut in two views or as rounded lengthwise segments) or a **2D shape** from a DXF or SVG drawing. The part, the foam block and both carriage paths update live in 3D as you type. |
+| **Prepare** | Choose a **machine** and a **material** preset, then set up the part: a **wing** (a straight panel, or an elliptical, curved or drawn half wing split into straight panels; root/tip airfoils from the built-in database, NACA or any `.dat` file, chords, span, sweep, washout, sheeting allowance, LE/TE stock, trailing-edge thickness, spar slots, servo channels, joiner holes, servo bays and a control surface), a **fuselage** (stations or side/top drawings, cut in two views, turned or as rounded lengthwise segments), a **2D shape** from a DXF or SVG drawing, or a **block of parts** nested in one foam block. The part, the foam block and both carriage paths update live in 3D as you type. |
 | **Preview** | Estimated time, cut lengths, kerf at each end, peak carriage speeds, the foam block you need and where to put it. Scrub or play back the cut with the timeline. Export G-code. |
 | **Device** | Connect over USB (or to the built-in **simulator**), live position, jog both carriages together or separately, home, unlock, set zero, wire on/off, start/pause/resume/stop the job, console. When a job stops for you (e.g. to turn the foam), it says what to do; press Resume. A **STOP** button (feed hold + reset, wire off) stays in the top bar while connected. |
 
@@ -111,6 +135,68 @@ and **Servo bays** groups:
 ![Servo bay template: the panel in plan view with the bay, spar slot and slits, and the distances to measure](docs/bay-template.png)
 
 `examples/sheeted_wing.toml` shows the same options for the command line.
+
+### Control surfaces, curved wings and nesting
+
+**Control surfaces** (*+ Add aileron, flap or elevator*). The surface comes off in the same cut as the
+panel. The wire runs down the hinge line and round a V-shaped wedge of waste in front of the surface,
+so the two pieces come apart ready to hinge:
+
+- *Hinged on top* (tape along the top surface): the V underneath lets it swing down by the V's angle;
+  up is free. *Bottom* is the same upside down. *Centre line* (pinned or CA hinges) has a V above and
+  below, for ± the angle. A V of 0° is a straight cut, one kerf wide.
+- The hinge line is set in % of the chord at its inboard and outboard ends and runs straight. Give
+  where it **starts and ends** along the span and the wing is split into panels there, because the wire
+  always cuts the whole length of a panel.
+- It is checked against spar slots, channels, joiners and servo bays, and the cutting steps say how to
+  hinge it.
+
+![Root sections with an aileron: top hinge, bottom hinge and centre hinge, with the wire's path](docs/control-surfaces.png)
+
+**Curved wings in straight panels.** Set *Planform* to *elliptical* (root chord, the chord where the
+ellipse is cut off, half span, and which line runs straight: 0 % a straight leading edge, 25 % the
+classic elliptical wing, 100 % a straight trailing edge), *from stations* (chord, leading edge, twist
+and height at as many stations as you like, joined by smooth curves or straight lines), or *from a
+drawing* (the half wing seen from above, root on the left: trace a picture of the plan). The wire
+cuts straight edges, so the wing is cut as panels whose ends sit on the true outline and meet face to
+face:
+
+- as few panels as keep the straight edges within the tolerance of the curve (default 2 mm), or the
+  number you ask for, with the error evened out; none longer than fits between the carriages, none
+  shorter than *Shortest panel*;
+- each panel is a cut of its own (the *Cut* selector, *Export all cuts*, one file per panel on the
+  command line), with its chords, sweep, washout and airfoils blended between the root and tip
+  sections. Spars and channels run straight from root to tip; joiners go in the root panel and servo
+  bays in the panel they sit in;
+- the cutting steps say which faces glue together and how far the panel strays from the curve.
+
+A short panel near a strongly tapered tip swings the far carriage a long way, because the wire carries
+the taper out to the carriages. If a panel runs off the machine, open_HOWI says so: use fewer or longer
+panels, a larger tip chord, or move the towers closer together.
+
+![An elliptical half wing in five straight panels, the aileron from 330 mm to the tip](docs/planform.png)
+
+![The elliptical wing in the app: panel 3 of 5, both hands nested in one block, the planform thumbnail](docs/elliptical.png)
+
+**Nesting.** *Both hands in one block* (Wing → Nesting) cuts the left and right panel in one go: the
+opposite hand stacks above this one over the same stretch of wire. A **Block of parts** nests any wing
+panels (or a panel of a split wing, or all of them) and 2D shapes, with copies and opposite hands, in
+one block:
+
+- parts are stacked bottom to top in columns, the first at the back of the block; when the block height
+  is used up, the next column stands in front. Each part keeps clear of the others by the gap you set,
+  at both ends of the block and so all along it;
+- the wire reaches a part in the first column straight from behind the block. A part further forward
+  is reached through a cut over the columns behind it and down the gap in front of them, and left the
+  same way. The steps list where each part is;
+- parts shorter than the block are cut on to its ends; a short, tapered part whose cut would turn inside
+  out there is refused, with the reason.
+
+`examples/elliptical_wing.howi.json` is the elliptical wing above; `examples/glider_block.howi.json`
+nests both wing panels and both tailplane halves (with their elevators) in one block;
+`examples/aileron_panel.toml` is a TOML job with an aileron.
+
+![A block of parts: both wing panels and both tailplane halves in two columns, cut in one go](docs/nesting.png)
 
 ### 2D shapes from DXF or SVG
 
@@ -255,6 +341,8 @@ openhowi slice examples/sport_fuselage.howi.json --plans plans.svg --guide guide
 openhowi shape former.svg --span 80 --material "XPS extruded (blue/pink)"   # cut a DXF/SVG drawing
 openhowi wing examples/tapered_wing.toml --svg wing.svg   # TOML job file, explicit kerf values
 openhowi wing examples/sheeted_wing.toml --bay-template bays.svg   # built-up core + 1:1 servo bay template
+openhowi wing examples/aileron_panel.toml            # a panel with its aileron cut off ([wing.control])
+openhowi slice examples/elliptical_wing.howi.json    # one G-code file per panel
 openhowi airfoils glider                             # search the airfoil database
 openhowi airfoils --export sd7037 -o sd7037.dat      # write a database airfoil as a .dat file
 openhowi send wing.gcode --port /dev/ttyACM0         # stream to GRBL (COM3 etc. on Windows)
@@ -274,7 +362,8 @@ openhowi naca 2412 -o naca2412.dat                   # write a NACA 4-digit airf
 
 ## Roadmap
 
-- Arrange several parts in one block automatically; lead-ins from below or the side when shapes block each other
+- Nesting: parts side by side within a column, and lead-ins from below or the side when shapes block each other
+- Rotate planform: cut a swept panel with its trailing edge along the block
 - Wing-root dowel and hold-down holes on the template; cutting short joiner holes with a heated tube
 - Homing/limit-aware placement and a block-size optimiser
 - Fuselages: sections from drawn formers (lofts between two different drawings), fin slots and hatch lines
@@ -291,7 +380,8 @@ ruff check src tests && ruff format --check src tests
 
 | Module | |
 |---|---|
-| `airfoil`, `airfoildb`, `geometry`, `wing`, `core` | Airfoil parsing/generation and the airfoil database, 2D geometry, wing sections with sheeting, stock, slots, channels, joiners and servo bays |
+| `airfoil`, `airfoildb`, `geometry`, `wing`, `core` | Airfoil parsing/generation and the airfoil database, 2D geometry, wing sections with sheeting, stock, slots, channels, joiners, servo bays and control surfaces |
+| `planform`, `nest` | Wing planforms and splitting curved ones into straight panels; nesting several parts in one block |
 | `svgimport`, `dxfimport`, `curves`, `shapes` | Drawing import, curve flattening, outlines/holes, kerf and cut planning for 2D shapes |
 | `fuselage`, `fusecut` | Fuselage stations/views, rounded sections, saddles, STL; two-view, turned and lengthwise cuts |
 | `diagrams`, `guide` | Step drawings (how the foam sits and turns) and the printable cutting guide |

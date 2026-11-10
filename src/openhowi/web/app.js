@@ -54,7 +54,9 @@ function download(name, text, type = 'text/plain') {
   setTimeout(() => URL.revokeObjectURL(url), 1000);
 }
 const slug = (s) => (s || 'part').toLowerCase().replace(/[^a-z0-9]+/g, '-').replace(/^-|-$/g, '') || 'part';
-const projectName = () => state.project.title || { wing: 'wing-panel', shape: 'shape', fuselage: 'fuselage' }[partType()] || 'part';
+const projectName = () => state.project.title || { wing: 'wing-panel', shape: 'shape', fuselage: 'fuselage', nest: 'block' }[partType()] || 'part';
+// A field shown only when another field has one of the given values (a value or a list of them)
+const matches = (want, have) => (Array.isArray(want) ? want.includes(have) : want === have);
 
 const state = {
   info: null, presets: { machine: [], material: [] }, airfoils: { naca: [], library: [], database: [] }, foilDb: null,
@@ -335,6 +337,54 @@ function drawingField(f, value, set) {
   return el('div', { class: 'field drawing', title: f.help }, box);
 }
 
+// A part to nest in a block: taken from this session (the wing or shape set up before switching
+// to the block) or from a saved project file.
+function partSummary(src) {
+  const p = src.part;
+  if (p.type === 'shape') return `2D shape${p.source ? ` from ${p.source.name}` : ''}, ${num(p.span, 0)} mm long`;
+  const plan = p.planform && p.planform !== 'panel' ? `${p.planform} wing` : 'wing panel';
+  const size = p.planform === 'stations' || p.planform === 'drawing' ? '' : ` ${num(p.root_chord, 0)}/${num(p.tip_chord ?? p.root_chord, 0)} × ${num(p.span, 0)} mm`;
+  return `${plan}${size}`;
+}
+
+function partField(f, value, set) {
+  const box = el('div', { class: `drawing-box${value ? '' : ' empty'}` },
+    el('div', { class: 'name' }, value ? value.title : 'No part chosen'),
+    el('div', { class: 'meta' }, value ? partSummary(value) : f.help));
+  const take = (type) => {
+    const part = clone(state.stash[type]?.part || state.info.default_parts[type]);
+    const label = { wing: 'Wing panel', shape: '2D shape' }[type];
+    set({ title: state.project.title ? `${state.project.title} · ${label}` : label, part });
+    renderPartForm();
+  };
+  const row = el('div', { class: 'button-row' });
+  for (const [type, label] of [['wing', 'This wing'], ['shape', 'This 2D shape']]) {
+    const b = el('button', { type: 'button' }, label);
+    b.addEventListener('click', () => take(type));
+    row.append(b);
+  }
+  const load = el('button', { type: 'button' }, 'Load project…');
+  load.addEventListener('click', () => {
+    const input = el('input', { type: 'file', accept: '.json,application/json' });
+    input.addEventListener('change', async () => {
+      const file = input.files[0];
+      if (!file) return;
+      try {
+        const project = JSON.parse(await file.text());
+        const type = project?.part?.type || 'wing';
+        if (!['wing', 'shape'].includes(type)) throw new Error('only wing panels and 2D shapes can be nested');
+        const part = { ...clone(state.info.default_parts[type]), ...upgradePart(project.part) };
+        set({ title: project.title || file.name.replace(/\.howi\.json$|\.json$/, ''), part });
+        renderPartForm();
+      } catch (err) { alert(`Could not load ${file.name}: ${err.message}`); }
+    });
+    input.click();
+  });
+  row.append(load);
+  box.append(row);
+  return el('div', { class: 'field drawing', title: f.help }, box);
+}
+
 // A table of numbers (fuselage stations): one row per item.
 function tableField(f, value, set) {
   const rows = Array.isArray(value) ? value : [];
@@ -358,7 +408,7 @@ function tableField(f, value, set) {
   const add = el('button', { type: 'button', class: 'add' }, `+ ${f.add_label || 'Add row'}`);
   add.addEventListener('click', () => {
     const last = rows.at(-1) || Object.fromEntries(cols.map((c) => [c.key, 0]));
-    rows.push({ ...last, ...('x' in last ? { x: (Number(last.x) || 0) + 50 } : {}) });
+    rows.push({ ...last, ...('x' in last ? { x: (Number(last.x) || 0) + 50 } : {}) });  // the next station along
     set(rows);
     renderPartForm();
   });
@@ -402,7 +452,7 @@ function listField(f, value, set) {
     // Fields shown only for some values of another field (e.g. diameter for round joiners)
     const controls = new Set(f.item_fields.flatMap((sub) => Object.keys(sub.show_if || {})));
     for (const sub of f.item_fields) {
-      const shown = Object.entries(sub.show_if || {}).every(([k, v]) => (item[k] ?? f.default_item[k]) === v);
+      const shown = Object.entries(sub.show_if || {}).every(([k, v]) => matches(v, item[k] ?? f.default_item[k]));
       if (!shown) continue;
       card.append(fieldEl(sub, item[sub.key] ?? f.default_item[sub.key], (v) => {
         item[sub.key] = v;
@@ -430,6 +480,7 @@ function fieldEl(f, value, set, showHelp) {
   let input;
   if (f.type === 'list') return listField(f, value, set);
   if (f.type === 'table') return tableField(f, value, set);
+  if (f.type === 'part') return partField(f, value, set);
   if (f.type === 'select') {
     input = el('select', { id });
     for (const [v, label] of f.options) input.append(new Option(label, v, false, v === value));
@@ -464,7 +515,7 @@ function buildForm(container, fields, values, onChange, showHelp = false) {
   const controls = new Set(fields.flatMap((f) => Object.keys(f.show_if || {})));
   const rebuild = () => buildForm(container, fields, values, onChange, showHelp);
   for (const f of fields) {
-    if (!Object.entries(f.show_if || {}).every(([k, v]) => values[k] === v)) continue;
+    if (!Object.entries(f.show_if || {}).every(([k, v]) => matches(v, values[k]))) continue;
     if (f.group && f.group !== group) {
       group = f.group;
       container.append(el('div', { class: 'group-title' }, group));
@@ -582,22 +633,25 @@ function renderThumbs() {
   if (!r) return;
   const p = state.project.part;
   let faces;
-  if (r.views && r.views.length) {
-    faces = r.views.map((v) => [v.label, null, '', v.rings]);
-  } else if (r.kind === 'wing') {
-    faces = [['Root', 'root', r.stats.airfoils.root], ['Tip', 'tip', r.stats.airfoils.tip]];
+  const views = (r.views || []).map((v) => [v.label, null, '', v.rings, v]);
+  if (r.kind === 'wing') {
+    // Root and tip sections, then the planform of a wing cut in panels
+    faces = [['Root', 'root', r.stats.airfoils.root], ['Tip', 'tip', r.stats.airfoils.tip], ...views];
+  } else if (views.length) {
+    faces = views;
   } else {
     const tapered = (p.tip_scale ?? 100) !== 100 || p.tip_offset_x || p.tip_offset_y;
     faces = tapered ? [['Root', 'root', ''], ['Tip', 'tip', '']] : [['Shape', 'root', r.stats.drawing.name]];
   }
-  for (const [label, face, name, own] of faces) {
+  for (const [label, face, name, own, view] of faces) {
     const rings = own || r.part.solids.flatMap((sd) => [sd[face].outer, ...sd[face].holes]);
     const skins = own ? [] : (r.part.skins || []).map((sk) => sk[face]);
     const pts = rings.flat().concat(skins.flat());
+    const plan = Boolean(view && view.plan);
     const xs = pts.map((q) => q[0]); const ys = pts.map((q) => q[1]);
     const x0 = Math.min(...xs); const x1 = Math.max(...xs); const y0 = Math.min(...ys); const y1 = Math.max(...ys);
     // Airfoils are drawn leading edge left, as usual; drawings as they appear in the machine.
-    const fx = r.kind === 'wing' ? (x) => x1 - x : (x) => x - x0;
+    const fx = r.kind === 'wing' && !plan ? (x) => x1 - x : (x) => x - x0;
     const toPath = (list) => list.map((ring) => ring.map((q, i) => `${i ? 'L' : 'M'}${fx(q[0]).toFixed(2)} ${(y1 - q[1]).toFixed(2)}`).join(' ') + 'Z').join(' ');
     const d = toPath(rings);
     const svg = document.createElementNS('http://www.w3.org/2000/svg', 'svg');
@@ -614,7 +668,15 @@ function renderThumbs() {
       skin.setAttribute('class', 'skin');
       svg.append(skin);
     }
-    box.append(el('figure', {}, svg, el('figcaption', {}, name ? `${label} · ${name}` : label)));
+    // A planform: the panel being cut, and the joints between panels
+    for (const [list, cls] of [[view?.marks, 'mark'], [view?.lines, 'joint']]) {
+      if (!list || !list.length) continue;
+      const extra = document.createElementNS('http://www.w3.org/2000/svg', 'path');
+      extra.setAttribute('d', toPath(list));
+      extra.setAttribute('class', cls);
+      svg.append(extra);
+    }
+    box.append(el('figure', { class: plan ? 'wide' : '' }, svg, el('figcaption', {}, name ? `${label} · ${name}` : label)));
   }
 }
 
@@ -660,6 +722,13 @@ function renderResult() {
     ...(s.core?.bays || []).map((b) => [`Servo bay ${b.number}`,
       `${b.size.map((v) => num(v, 1).replace(/\.0$/, '')).join(' × ')} mm, ${b.side}; ${num(b.from_root, 1)} mm from the root, `
       + `${num(b.behind_front, 1)} mm behind the front${b.channels.length ? `; reaches channel ${b.channels.join(', ')}` : ''}`]),
+    ...(s.planform ? [['Wing', `${s.planform.kind === 'panel' ? 'straight' : s.planform.kind}, ${num(s.planform.span, 0)} mm in ${s.planform.panels} panels`
+      + (s.planform.kind === 'panel' ? '' : `, within ${num(s.planform.worst, 1)} mm of the outline`)],
+    ['This panel', `${s.planform.panel} of ${s.planform.panels}: ${num(s.planform.from, 0)}–${num(s.planform.to, 0)} mm from the root`]] : []),
+    ...(s.control ? [[s.control.name[0].toUpperCase() + s.control.name.slice(1),
+      `${s.control.hinge === 'center' ? 'centre' : s.control.hinge} hinge, ${s.control.bevel ? `${num(s.control.bevel, 0)}° V` : 'straight cut'}; `
+      + `${num(s.control.depth.root, 0)} → ${num(s.control.depth.tip, 0)} mm deep`]] : []),
+    ...(s.nest ? [['Nested', `${s.nest.parts} part${s.nest.parts === 1 ? '' : 's'} in ${s.nest.columns} column${s.nest.columns === 1 ? '' : 's'}`]] : []),
     ...(s.fuselage ? [
       ['Fuselage', `${num(s.fuselage.length, 0)} × ${num(s.fuselage.width, 0)} × ${num(s.fuselage.height, 0)} mm · ${num(s.fuselage.volume_l, 2)} l`],
       ['This cut', `${r.job} of ${r.jobs.length}: ${s.fuselage.cut}`],

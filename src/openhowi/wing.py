@@ -9,14 +9,16 @@ from __future__ import annotations
 
 import math
 from collections.abc import Sequence
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 
 from .airfoil import Airfoil
 from .core import (
     MIN_WEB,
     Channel,
+    ControlSurface,
     CoreError,
     CoreSpec,
+    HingeCut,
     Hole,
     HoleShape,
     Joiner,
@@ -27,7 +29,7 @@ from .core import (
     materialize,
     run_counts,
 )
-from .geometry import Point, offset_polygon, outline_gap, signed_area
+from .geometry import Point, offset_polygon, outline_gap, point_in_polygon, signed_area
 
 
 def place_section(
@@ -166,6 +168,8 @@ class WingPanel:
     """Straight holes through the panel for joiner tubes or blades."""
     bays: tuple[ServoBay, ...] = ()
     """Servo bays: checked and drawn, but cut by hand (the wire can only cut through the whole span)."""
+    control: ControlSurface | None = None
+    """A control surface (aileron, flap, elevator) cut off along a hinge line in the same cut."""
 
     def __post_init__(self) -> None:
         if self.tip_airfoil is None:
@@ -195,6 +199,7 @@ class WingPanel:
             spars=self.spars,
             channels=self.channels,
             joiners=self.joiners,
+            control=self.control,
         )
 
     def tip_point(self, fraction: float) -> Point:
@@ -272,9 +277,22 @@ class WingPanel:
         tip_holes_placed = [
             (tip_tags[h.tag], place([h.center], tc, tx, ty, tt)[0], h.shape.rotated(tt)) for h in tip.holes
         ]
+        root_placed, tip_placed = place(root_pts, rc, rx, ry, rt), place(tip_pts, tc, tx, ty, tt)
+        hinges: list[tuple[int, HingeCut] | None] = [None, None]
+        parts = [[root_placed], [tip_placed]]
+        for k, (runs, tags, pts, frame) in enumerate(
+            ((root, root_tags, root_placed, (rc, rx, ry, rt)), (tip, tip_tags, tip_placed, (tc, tx, ty, tt)))
+        ):
+            if runs.hinge is None:
+                continue
+            hinge = runs.hinge.moved(lambda q, frame=frame: place(q, *frame))
+            hinges[k] = (tags["hinge"], hinge)
+            main_top, main_bottom, front_top, _front_bottom = (tags[t] for t in hinge.tags)
+            surface = pts[tags[hinge.tags[3]] :] + pts[: front_top + 1] + ([hinge.h] if hinge.kind == "center" else [])
+            parts[k] = [pts[main_top : main_bottom + 1], surface]
         return WingSections(
-            root=place(root_pts, rc, rx, ry, rt),
-            tip=place(tip_pts, tc, tx, ty, tt),
+            root=root_placed,
+            tip=tip_placed,
             cutbacks={
                 "root_te": root.te_cutback,
                 "tip_te": tip.te_cutback,
@@ -283,6 +301,10 @@ class WingPanel:
             },
             root_holes=root_holes_placed,
             tip_holes=tip_holes_placed,
+            root_hinge=hinges[0],
+            tip_hinge=hinges[1],
+            root_parts=parts[0],
+            tip_parts=parts[1],
         )
 
     def plain_cores(self) -> tuple[list[Point], list[Point]]:
@@ -343,6 +365,11 @@ class WingPanel:
                         raise CoreError(
                             f"{name} leaves less than {MIN_WEB:g} mm of foam {z:.0f} mm from the root; make it shallower"
                         )
+            if self.control is not None:
+                xh = self.root_chord * self.control.position / 100.0
+                xh += (self.tip_point(self.control.at(True) / 100.0)[0] - xh) * t
+                if x1 + MIN_WEB > xh:
+                    raise CoreError(f"{name} runs into the control surface: move it forward of the hinge line")
             pockets = [_pocket(face(z), x0, x1, floor, top) for z in (z0, bay.station, z1)]
             for k, spar in enumerate(self.spars, start=1):
                 xs = self.root_chord * spar.position / 100.0
@@ -416,8 +443,8 @@ class WingPanel:
         """Kerf-compensated wire paths in the root and tip planes, index-matched."""
         sections = self.sections()
         return (
-            cut_path(sections.root, sections.root_holes, self.root_kerf),
-            cut_path(sections.tip, sections.tip_holes, self.tip_kerf),
+            cut_path(sections.root, sections.root_holes, self.root_kerf, sections.root_hinge),
+            cut_path(sections.tip, sections.tip_holes, self.tip_kerf, sections.tip_hinge),
         )
 
     def root_contour(self) -> list[Point]:
@@ -494,18 +521,42 @@ class WingSections:
     root_holes: list[tuple[int, Point, HoleShape]]
     """(index of the slit's start in ``root``, centre, section) for each servo channel and joiner."""
     tip_holes: list[tuple[int, Point, HoleShape]]
+    root_hinge: tuple[int, HingeCut] | None = None
+    """(index of the hinge line's point on the outline, the cut) when a control surface comes off."""
+    tip_hinge: tuple[int, HingeCut] | None = None
+    root_parts: list[list[Point]] = field(default_factory=list)
+    """The finished pieces at the root: the core, or the main panel and the control surface."""
+    tip_parts: list[list[Point]] = field(default_factory=list)
 
     def outlines(self, tip: bool) -> list[list[Point]]:
         """The finished holes at the root or tip, for display."""
         return [shape.outline(center) for _, center, shape in (self.tip_holes if tip else self.root_holes)]
 
+    def pieces(self, tip: bool) -> list[tuple[list[Point], list[list[Point]]]]:
+        """Each finished piece at the root or tip with the holes inside it, for display."""
+        parts = (self.tip_parts if tip else self.root_parts) or [self.tip if tip else self.root]
+        holes = self.outlines(tip)
+        out: list[tuple[list[Point], list[list[Point]]]] = [(ring, []) for ring in parts]
+        for hole in holes:
+            k = next((i for i, ring in enumerate(parts) if point_in_polygon(hole[0], ring)), 0)
+            out[k][1].append(hole)
+        return out
 
-def cut_path(core: Sequence[Point], holes: Sequence[tuple[int, Point, HoleShape]], kerf: float) -> list[Point]:
-    """Kerf-compensated outline with a detour round every hole: in along its slit, round it and back out."""
+
+def cut_path(
+    core: Sequence[Point],
+    holes: Sequence[tuple[int, Point, HoleShape]],
+    kerf: float,
+    hinge: tuple[int, HingeCut] | None = None,
+) -> list[Point]:
+    """Kerf-compensated outline with a detour round every hole (in along its slit, round it and back
+    out) and down the hinge line of a control surface."""
     ring = apply_kerf(core, kerf)
     detours: dict[int, list[list[Point]]] = {}
     for index, center, shape in holes:
         detours.setdefault(index, []).append(shape.ring(center, inset=kerf / 2))
+    if hinge is not None:
+        detours.setdefault(hinge[0], []).append(hinge[1].detour(kerf))
     out: list[Point] = []
     for i, p in enumerate(ring):
         out.append(p)

@@ -196,7 +196,8 @@ export class Viewer {
       color: this.colors.part, roughness: 0.85, side: THREE.DoubleSide, flatShading: r.kind === 'shape',
       ...(ghosted ? { transparent: true, opacity: 0.28, depthWrite: false } : {}),
     });
-    for (const solid of r.part.solids) this.addSolid(solid, r.part.z_root, r.part.z_tip, partMat);
+    // Nested parts each have their own root and tip positions
+    for (const solid of r.part.solids) this.addSolid(solid, solid.z_root ?? r.part.z_root, solid.z_tip ?? r.part.z_tip, partMat);
     // Servo bays (cut by hand): the pocket, standing slightly proud of the surface so it shows
     const bayMat = new THREE.MeshStandardMaterial({
       color: this.colors.bay, roughness: 0.7, side: THREE.DoubleSide, transparent: true, opacity: 0.85,
@@ -208,7 +209,7 @@ export class Viewer {
     // Finished outline (e.g. the sheeted airfoil) around the core, at both faces
     const skinMat = new THREE.LineBasicMaterial({ color: this.colors.frame, transparent: true, opacity: 0.9 });
     for (const skin of r.part.skins || []) {
-      for (const [pts, z] of [[skin.root, r.part.z_root], [skin.tip, r.part.z_tip]]) {
+      for (const [pts, z] of [[skin.root, skin.z_root ?? r.part.z_root], [skin.tip, skin.z_tip ?? r.part.z_tip]]) {
         const geom = new THREE.BufferGeometry();
         geom.setAttribute('position', new THREE.Float32BufferAttribute(pts.flatMap(([x, y]) => [x, y, z]), 3));
         this.partGroup.add(new THREE.LineLoop(geom, skinMat));

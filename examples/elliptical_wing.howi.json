@@ -1,0 +1,106 @@
+{
+  "version": 1,
+  "machine_preset": "Generic 4-axis, 1000 mm wire (XYUV)",
+  "machine": {
+    "tower_distance": 1000.0,
+    "x_travel": 600.0,
+    "y_travel": 300.0,
+    "axis_letters": "XYUV",
+    "travel_feed": 800.0,
+    "feed_mode": "inverse-time",
+    "decimals": 3,
+    "baud": 115200
+  },
+  "material_preset": "EPS white, 15-20 kg/m\u00b3",
+  "material": {
+    "cut_feed": 200.0,
+    "kerf": 1.2,
+    "kerf_half_speed": 1.7,
+    "wire_power": null,
+    "preheat": 3.0
+  },
+  "part": {
+    "type": "wing",
+    "root_airfoil": "naca2412",
+    "tip_airfoil": "naca2410",
+    "root_chord": 240.0,
+    "tip_chord": 110.0,
+    "span": 650.0,
+    "sweep": 0.0,
+    "washout": 1.5,
+    "washout_pivot": 0.25,
+    "tip_offset_y": 0.0,
+    "sheeting_top": 0.0,
+    "sheeting_bottom": 0.0,
+    "le_stock": 0.0,
+    "te_stock": 0.0,
+    "te_thickness": 0.8,
+    "spars": [
+      {
+        "position": 30.0,
+        "position_tip": null,
+        "width": 6.0,
+        "depth_top": 1.5,
+        "depth_bottom": 1.5
+      }
+    ],
+    "channels": [],
+    "joiners": [],
+    "bays": [],
+    "kerf_root_override": null,
+    "kerf_tip_override": null,
+    "points_per_surface": 80,
+    "planform": "elliptical",
+    "plan_view": null,
+    "wing_stations": [
+      {
+        "x": 0.0,
+        "chord": 250.0,
+        "le": 0.0,
+        "twist": 0.0,
+        "height": 0.0
+      },
+      {
+        "x": 350.0,
+        "chord": 225.0,
+        "le": 12.0,
+        "twist": 0.5,
+        "height": 0.0
+      },
+      {
+        "x": 600.0,
+        "chord": 120.0,
+        "le": 70.0,
+        "twist": 2.0,
+        "height": 15.0
+      }
+    ],
+    "curve": "smooth",
+    "line": 25.0,
+    "panels": 0,
+    "tolerance": 2.0,
+    "max_panel": null,
+    "min_panel": 60.0,
+    "controls": [
+      {
+        "name": "aileron",
+        "position": 75.0,
+        "position_tip": 72.0,
+        "hinge": "top",
+        "bevel": 25.0,
+        "start": 330.0,
+        "end": null
+      }
+    ],
+    "job": 1,
+    "pair": true,
+    "nest_gap": 8.0
+  },
+  "placement": {
+    "root_side": "xy",
+    "root_offset": 200.0,
+    "x_margin": 25.0,
+    "y_offset": 50.0
+  },
+  "title": "Elliptical wing"
+}

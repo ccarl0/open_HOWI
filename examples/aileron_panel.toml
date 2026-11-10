@@ -1,0 +1,35 @@
+# An outer wing panel with its aileron cut off in the same cut.
+#   openhowi wing examples/aileron_panel.toml --svg aileron.svg
+# All lengths in mm, angles in degrees. See tapered_wing.toml for every machine and wing option.
+
+title = "Outer panel with aileron"
+
+[machine]
+tower_distance = 1000.0
+x_travel = 500.0
+y_travel = 250.0
+
+[wing]
+root_airfoil = "naca2412"
+tip_airfoil = "naca2410"
+root_chord = 220.0
+tip_chord = 160.0
+span = 500.0
+sweep = 30.0
+washout = 1.0
+root_kerf = 1.0
+tip_kerf = 1.2
+te_stock = 0.0
+
+[wing.control]
+name = "aileron"           # aileron, flap, flaperon, elevator, elevon or rudder (for the instructions)
+position = 75.0            # hinge line at the root, % of the chord from the leading edge
+position_tip = 72.0        # hinge line at the tip (leave out for the same %)
+hinge = "top"              # "top" or "bottom" (tape hinge on that surface) or "center" (pinned/CA hinges)
+bevel = 25.0               # V cut in front of the surface: how far it swings towards the V; 0 = straight cut
+
+[placement]
+root_side = "xy"
+root_offset = 200.0
+x_margin = 25.0
+y_offset = 40.0

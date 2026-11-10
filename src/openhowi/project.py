@@ -9,12 +9,14 @@ from __future__ import annotations
 
 import copy
 import dataclasses
+import json
+from collections import OrderedDict
 from dataclasses import dataclass, field
 from typing import Any
 
 from . import airfoildb
-from .airfoil import NACA_SPEC, Airfoil, AirfoilError, load_airfoil, parse_dat
-from .core import Channel, CoreSpec, Joiner, ServoBay, Spar
+from .airfoil import NACA_SPEC, Airfoil, AirfoilError, blend, load_airfoil, parse_dat, thicken_te
+from .core import CONTROL_NAMES, Channel, ControlSurface, CoreSpec, Joiner, ServoBay, Spar
 from .drawing import ShapeError
 from .fusecut import CutOptions, build_job, job_labels
 from .fuselage import Fuselage, Saddle, Station
@@ -22,6 +24,8 @@ from .gcode import generate_gcode, segments
 from .geometry import Point, bounds, polyline_length, signed_area
 from .machine import Machine
 from .material import Material
+from .nest import NestError, NestItem, at, item_paths, nest
+from .planform import PanelCut, Planform, PlanformError
 from .presets import BUILTIN, PresetError, machine_from_values, material_from_values
 from .shapes import (
     FORMATS,
@@ -34,7 +38,7 @@ from .shapes import (
     shapes_toolpath,
     transform_regions,
 )
-from .toolpath import Placement, PlacementError, Toolpath, layout_wing, wing_toolpath
+from .toolpath import MachineLimitError, Placement, PlacementError, Toolpath, layout_wing, wing_toolpath
 from .wing import BayGeometry, WingPanel
 
 PROJECT_VERSION = 1
@@ -102,22 +106,96 @@ BAY_FIELDS: list[dict[str, Any]] = [
     {"key": "side", "label": "Surface", "type": "select", "options": [["bottom", "bottom"], ["top", "top"]]},
 ]  # fmt: skip
 
+CONTROL_FIELDS: list[dict[str, Any]] = [
+    {"key": "name", "label": "Surface", "type": "select", "options": [[n, n] for n in CONTROL_NAMES]},
+    {"key": "position", "label": "Hinge line", "unit": "% chord", "type": "number", "min": 1, "max": 99, "step": 1,
+     "help": "Where the surface comes off at its inboard end, measured from the leading edge: 75 % leaves a "
+             "surface a quarter of the chord deep."},
+    {"key": "position_tip", "label": "Hinge at outboard end", "unit": "% chord", "type": "number", "min": 1,
+     "max": 99, "step": 1, "optional": True, "help": "Blank: the same %. The hinge line is straight."},
+    {"key": "hinge", "label": "Hinged on", "type": "select",
+     "options": [["top", "top (tape)"], ["bottom", "bottom (tape)"], ["center", "centre line"]],
+     "help": "Top or bottom: a tape hinge along that surface. Centre line: pinned or CA hinges."},
+    {"key": "bevel", "label": "V in front", "unit": "°", "type": "number", "min": 0, "max": 60, "step": 1,
+     "help": "The wedge cut out between the pieces: how far the surface can swing towards the V (down for a top "
+             "hinge, up for a bottom hinge, both ways on the centre line). 0: a straight cut."},
+    {"key": "start", "label": "Starts at", "unit": "mm", "type": "number", "min": 0, "optional": True,
+     "help": "Distance from the wing root. Blank: at the root. The wing is split into panels where the surface "
+             "starts and ends, because the wire cuts the whole length of a panel."},
+    {"key": "end", "label": "Ends at", "unit": "mm", "type": "number", "min": 1, "optional": True,
+     "help": "Distance from the wing root. Blank: at the tip."},
+]  # fmt: skip
+
+WING_STATION_COLUMNS: list[dict[str, Any]] = [
+    {"key": "x", "label": "From root", "unit": "mm", "min": 0, "help": "Distance along the span from the wing root"},
+    {"key": "chord", "label": "Chord", "unit": "mm", "min": 1},
+    {"key": "le", "label": "LE aft", "unit": "mm", "help": "Leading edge behind the root's leading edge"},
+    {"key": "twist", "label": "Twist", "unit": "°", "help": "Washout relative to the root, nose-down"},
+    {"key": "height", "label": "Height", "unit": "mm", "help": "Leading edge above the root's (dihedral, upsweep)"},
+]  # fmt: skip
+
+CURVED = ["elliptical", "stations", "drawing"]
+
 PART_FIELDS: list[dict[str, Any]] = [
     {"key": "root_airfoil", "label": "Root airfoil", "type": "airfoil", "group": "Airfoils"},
     {"key": "tip_airfoil", "label": "Tip airfoil", "type": "airfoil", "optional": True, "group": "Airfoils",
-     "help": "Leave as “same as root” for a constant section."},
-    {"key": "root_chord", "label": "Root chord", "unit": "mm", "type": "number", "min": 1, "group": "Planform"},
-    {"key": "tip_chord", "label": "Tip chord", "unit": "mm", "type": "number", "min": 1, "group": "Planform"},
+     "help": "Leave as “same as root” for a constant section. A wing split into panels blends between the two."},
+    {"key": "planform", "label": "Planform", "type": "select", "group": "Planform",
+     "options": [["panel", "straight panel"], ["elliptical", "elliptical"],
+                 ["stations", "from stations (curved or cranked)"], ["drawing", "from a drawing (seen from above)"]],
+     "help": "A curved wing is cut as straight panels whose ends sit on the true outline."},
+    {"key": "plan_view", "label": "Planform drawing", "type": "drawing", "group": "Planform",
+     "show_if": {"planform": "drawing"},
+     "help": "One closed outline of the half wing at 1:1: root on the left, leading edge at the top. Trace it over "
+             "a picture of the plan in a drawing program."},
+    {"key": "wing_stations", "label": "Stations", "type": "table", "group": "Planform", "columns": WING_STATION_COLUMNS,
+     "show_if": {"planform": "stations"}, "min_rows": 2, "max": 40, "add_label": "Add station",
+     "help": "The half wing from root to tip: chord, leading edge, twist and height at each station."},
+    {"key": "curve", "label": "Between stations", "type": "select", "group": "Planform",
+     "show_if": {"planform": "stations"},
+     "options": [["smooth", "smooth curves"], ["straight", "straight lines (a joint at each station)"]]},
+    {"key": "root_chord", "label": "Root chord", "unit": "mm", "type": "number", "min": 1, "group": "Planform",
+     "show_if": {"planform": ["panel", "elliptical"]}},
+    {"key": "tip_chord", "label": "Tip chord", "unit": "mm", "type": "number", "min": 1, "group": "Planform",
+     "show_if": {"planform": ["panel", "elliptical", "drawing"]},
+     "help": "Elliptical: where the ellipse is cut off. Drawing: the wing is cut out to where it gets this narrow; "
+             "the rest of a rounded tip is carved by hand."},
     {"key": "span", "label": "Span", "unit": "mm", "type": "number", "min": 1, "group": "Planform",
-     "help": "Length of this panel along the wire."},
+     "show_if": {"planform": ["panel", "elliptical"]},
+     "help": "Straight panel: its length along the wire. Elliptical: the half span, root to tip."},
+    {"key": "line", "label": "Straight line at", "unit": "% chord", "type": "number", "min": 0, "max": 100, "step": 5,
+     "group": "Planform", "show_if": {"planform": "elliptical"},
+     "help": "This line runs straight from root to tip: 0 % a straight leading edge, 25 % the classic elliptical "
+             "wing, 100 % a straight trailing edge."},
     {"key": "sweep", "label": "Sweep", "unit": "mm", "type": "number", "group": "Planform",
-     "help": "How far the tip leading edge sits behind the root leading edge."},
+     "show_if": {"planform": ["panel", "elliptical"]},
+     "help": "How far the tip leading edge sits behind the root leading edge. Elliptical: how far the straight "
+             "line sits further back at the tip."},
     {"key": "washout", "label": "Washout", "unit": "°", "type": "number", "step": 0.1, "group": "Planform",
-     "help": "Tip twist, positive nose-down."},
+     "show_if": {"planform": ["panel", "elliptical", "drawing"]}, "help": "Tip twist, positive nose-down."},
     {"key": "washout_pivot", "label": "Twist axis", "unit": "× chord", "type": "number", "min": 0, "max": 1,
      "step": 0.05, "group": "Planform"},
     {"key": "tip_offset_y", "label": "Tip height offset", "unit": "mm", "type": "number", "group": "Planform",
+     "show_if": {"planform": ["panel", "elliptical", "drawing"]},
      "help": "Raise the tip leading edge, e.g. to cut dihedral into a flat-bottomed panel."},
+    {"key": "panels", "label": "Panels", "type": "number", "min": 0, "max": 40, "step": 1, "group": "Panels",
+     "help": "How many straight panels to cut the wing in. 0: as few as follow the outline within the tolerance "
+             "(a straight panel: one, unless it is longer than the longest panel)."},
+    {"key": "tolerance", "label": "Follow the outline within", "unit": "mm", "type": "number", "min": 0.1,
+     "step": 0.1, "group": "Panels", "show_if": {"planform": CURVED},
+     "help": "How far the straight edges of a panel may stray from the curve; sand the rest fair."},
+    {"key": "max_panel", "label": "Longest panel", "unit": "mm", "type": "number", "min": 20, "optional": True,
+     "group": "Panels", "help": "Blank: a curved wing's panels are as long as fit between the carriages."},
+    {"key": "min_panel", "label": "Shortest panel", "unit": "mm", "type": "number", "min": 5, "step": 5,
+     "group": "Panels", "show_if": {"planform": CURVED},
+     "help": "A short panel that tapers a lot swings the carriages far: its cut is carried out to them. Longer "
+             "tip panels stray further from the curve but stay on the machine."},
+    {"key": "controls", "label": "Control surface", "type": "list", "group": "Control surface",
+     "item_label": "Control surface", "add_label": "Add aileron, flap or elevator", "max": 1,
+     "item_fields": CONTROL_FIELDS,
+     "empty": "No control surface. Add one to cut it off along its hinge line in the same cut.",
+     "default_item": {"name": "aileron", "position": 75.0, "position_tip": None, "hinge": "top", "bevel": 25.0,
+                      "start": None, "end": None}},
     {"key": "sheeting_top", "label": "Top sheeting", "unit": "mm", "type": "number", "min": 0, "step": 0.1,
      "group": "Core", "help": "Skin glued on top (e.g. 1.5 mm balsa, 0.6 mm obeche): the core is cut this much undersize."},
     {"key": "sheeting_bottom", "label": "Bottom sheeting", "unit": "mm", "type": "number", "min": 0, "step": 0.1,
@@ -126,6 +204,10 @@ PART_FIELDS: list[dict[str, Any]] = [
      "help": "Cut the core back this far from the leading edge to fit a balsa or hardwood leading-edge strip."},
     {"key": "te_stock", "label": "TE stock", "unit": "mm", "type": "number", "min": 0, "step": 0.5, "group": "Core",
      "help": "Cut the core back this far from the trailing edge to fit a trailing-edge strip."},
+    {"key": "te_thickness", "label": "TE thickness", "unit": "mm", "type": "number", "min": 0, "step": 0.1,
+     "group": "Core",
+     "help": "Open a sharp trailing edge to at least this thickness: a foam edge thinner than the kerf melts away. "
+             "The section thickens smoothly from the nose back. 0: as the airfoil is."},
     {"key": "spars", "label": "Spar slots", "type": "list", "group": "Spars", "item_label": "Spar",
      "add_label": "Add spar", "empty": "No spar slots.", "max": 6, "item_fields": SPAR_FIELDS,
      "default_item": {"position": 25.0, "position_tip": None, "width": 6.0, "depth_top": 1.5, "depth_bottom": 1.5}},
@@ -142,6 +224,11 @@ PART_FIELDS: list[dict[str, Any]] = [
      "empty": "No servo bays. The wire cannot cut them: they are checked here and cut by hand from a printed template.",
      "default_item": {"station": 150.0, "position": 40.0, "length": 35.0, "width": 15.0, "depth": 12.0,
                       "side": "bottom"}},
+    {"key": "pair", "label": "Both hands in one block", "type": "bool", "group": "Nesting",
+     "help": "Cut the left and the right panel in one go: the opposite hand stacks above (or in front of) this one, "
+             "over the same stretch of wire."},
+    {"key": "nest_gap", "label": "Gap between them", "unit": "mm", "type": "number", "min": 1, "step": 1,
+     "group": "Nesting", "show_if": {"pair": True}},
     {"key": "kerf_root_override", "label": "Root kerf override", "unit": "mm", "type": "number", "min": 0,
      "step": 0.05, "optional": True, "group": "Advanced", "help": "Blank: from the material and the cut speed at the root."},
     {"key": "kerf_tip_override", "label": "Tip kerf override", "unit": "mm", "type": "number", "min": 0,
@@ -285,13 +372,46 @@ FUSELAGE_PLACEMENT_FIELDS: list[dict[str, Any]] = [
      "help": "Machine Y of the underside of the foam, i.e. of the support it rests on."},
 ]  # fmt: skip
 
+NEST_ITEM_FIELDS: list[dict[str, Any]] = [
+    {"key": "source", "label": "Part", "type": "part",
+     "help": "A wing panel or a 2D shape: take the one set up in this session, or load a saved project."},
+    {"key": "job", "label": "Panel", "type": "number", "min": 0, "step": 1,
+     "help": "For a wing cut in several panels: which one. 0: all of them."},
+    {"key": "copies", "label": "Copies", "type": "number", "min": 1, "max": 50, "step": 1},
+    {"key": "opposite", "label": "Opposite hand", "type": "bool",
+     "help": "Root at the other end of the block: the other wing half."},
+]  # fmt: skip
+
+NEST_FIELDS: list[dict[str, Any]] = [
+    {"key": "items", "label": "Parts", "type": "list", "group": "Parts", "item_label": "Part", "add_label": "Add part",
+     "max": 12, "item_fields": NEST_ITEM_FIELDS,
+     "empty": "No parts yet. Add wing panels and 2D shapes to cut them all from one block, in one go.",
+     "default_item": {"source": None, "job": 1, "copies": 1, "opposite": False}},
+    {"key": "gap", "label": "Gap between parts", "unit": "mm", "type": "number", "min": 1, "step": 1,
+     "group": "Block"},
+    {"key": "max_height", "label": "Block height", "unit": "mm", "type": "number", "min": 10, "optional": True,
+     "group": "Block",
+     "help": "Tallest stack of parts; the next ones start a column in front. Blank: as high as the machine reaches."},
+]  # fmt: skip
+
+NEST_PLACEMENT_FIELDS: list[dict[str, Any]] = [
+    {"key": "root_offset", "label": "Block from XY carriage", "unit": "mm", "type": "number", "min": 0,
+     "help": "Distance from the XY carriage to the near end of the block, where every part starts."},
+    {"key": "x_margin", "label": "Rear of the cut X", "unit": "mm", "type": "number", "min": 1,
+     "help": "Machine X of the back of the parts. The foam's rear face goes between X=0 and here."},
+    {"key": "y_offset", "label": "Lowest part Y", "unit": "mm", "type": "number", "min": 0,
+     "help": "Machine Y of the bottom of the lowest part in each column."},
+]  # fmt: skip
+
 PART_TYPES = [
     {"type": "wing", "label": "Wing panel"},
     {"type": "shape", "label": "2D shape"},
     {"type": "fuselage", "label": "Fuselage"},
+    {"type": "nest", "label": "Block of parts"},
 ]
-PART_SCHEMAS = {"wing": PART_FIELDS, "shape": SHAPE_FIELDS, "fuselage": FUSELAGE_FIELDS}
-PLACEMENT_SCHEMAS = {"wing": PLACEMENT_FIELDS, "shape": SHAPE_PLACEMENT_FIELDS, "fuselage": FUSELAGE_PLACEMENT_FIELDS}
+PART_SCHEMAS = {"wing": PART_FIELDS, "shape": SHAPE_FIELDS, "fuselage": FUSELAGE_FIELDS, "nest": NEST_FIELDS}
+PLACEMENT_SCHEMAS = {"wing": PLACEMENT_FIELDS, "shape": SHAPE_PLACEMENT_FIELDS, "fuselage": FUSELAGE_PLACEMENT_FIELDS,
+                     "nest": NEST_PLACEMENT_FIELDS}  # fmt: skip
 DEFAULT_PARTS: dict[str, dict[str, Any]] = {
     "wing": {
         "type": "wing",
@@ -308,6 +428,7 @@ DEFAULT_PARTS: dict[str, dict[str, Any]] = {
         "sheeting_bottom": 0.0,
         "le_stock": 0.0,
         "te_stock": 0.0,
+        "te_thickness": 0.0,
         "spars": [],
         "channels": [],
         "joiners": [],
@@ -315,6 +436,26 @@ DEFAULT_PARTS: dict[str, dict[str, Any]] = {
         "kerf_root_override": None,
         "kerf_tip_override": None,
         "points_per_surface": 80,
+        "planform": "panel",
+        "plan_view": None,
+        "wing_stations": [
+            {"x": x, "chord": c, "le": le, "twist": tw, "height": h}
+            for x, c, le, tw, h in (
+                (0.0, 250.0, 0.0, 0.0, 0.0),
+                (350.0, 225.0, 12.0, 0.5, 0.0),
+                (600.0, 120.0, 70.0, 2.0, 15.0),
+            )
+        ],
+        "curve": "smooth",
+        "line": 25.0,
+        "panels": 0,
+        "tolerance": 2.0,
+        "max_panel": None,
+        "min_panel": 40.0,
+        "controls": [],
+        "job": 1,
+        "pair": False,
+        "nest_gap": 8.0,
     },
     "shape": {
         "type": "shape",
@@ -366,7 +507,9 @@ DEFAULT_PARTS["fuselage"] = {
     "kerf_root_override": None,
     "kerf_tip_override": None,
 }
+DEFAULT_PARTS["nest"] = {"type": "nest", "items": [], "gap": 8.0, "max_height": None}
 DEFAULT_PLACEMENTS: dict[str, dict[str, Any]] = {
+    "nest": {"root_side": "xy", "root_offset": 200.0, "x_margin": 25.0, "y_offset": 20.0},
     "wing": {"root_side": "xy", "root_offset": 200.0, "x_margin": 25.0, "y_offset": 40.0},
     "shape": {"root_side": "xy", "root_offset": 300.0, "x_margin": 20.0, "y_offset": 20.0},
     "fuselage": {"root_side": "xy", "root_offset": 30.0, "x_margin": 20.0, "y_offset": 10.0},
@@ -452,6 +595,9 @@ class _Part:
     """Illustrated steps for this cut: {"title", "notes", "svg"}."""
     ghost_label: str = ""
     jig: dict[str, float] | None = None
+    solid_z: list[tuple[float, float]] = field(default_factory=list)
+    """Root and tip positions of each solid when they differ (nested parts); empty: all at z_root/z_tip."""
+    skin_z: list[tuple[float, float]] = field(default_factory=list)
 
 
 def _r(v: float) -> float:
@@ -516,39 +662,312 @@ def _slice(project: dict[str, Any]) -> SliceResult:
     machine = machine_from_values(machine_values, material)
     placement = _placement(project)
 
-    build = {"wing": _wing_part, "shape": _shape_part, "fuselage": _fuselage_part}[kind]
+    build = {"wing": _wing_part, "shape": _shape_part, "fuselage": _fuselage_part, "nest": _nest_part}[kind]
     built = build(part, machine, material, placement)
     return _finish(project, kind, machine, material, placement, built)
 
 
+_SPLITS: OrderedDict[str, list[float]] = OrderedDict()
+
+
+def build_planform(part: dict[str, Any], warnings: list[str] | None = None) -> Planform:
+    """The half wing seen from above, as the part describes it."""
+    warnings = [] if warnings is None else warnings
+    kind = part.get("planform") or "panel"
+    washout = _number(part, "washout", 0.0) or 0.0
+    rise = _number(part, "tip_offset_y", 0.0) or 0.0
+    try:
+        if kind in ("panel", "elliptical"):
+            root_chord, span = _number(part, "root_chord"), _number(part, "span")
+            if root_chord is None or span is None:
+                raise SliceError("root_chord and span are required")
+            tip_chord = _number(part, "tip_chord") or root_chord
+            sweep = _number(part, "sweep", 0.0) or 0.0
+            if kind == "panel":
+                return Planform.trapezoid(root_chord, tip_chord, span, sweep, washout, rise)
+            line = _number(part, "line", 25.0)
+            return Planform.elliptical(root_chord, tip_chord, span, 25.0 if line is None else line, sweep, washout,
+                                       rise)  # fmt: skip
+        if kind == "stations":
+            raw = part.get("wing_stations") or []
+            if not isinstance(raw, list):
+                raise SliceError("wing stations must be a list")
+            rows = []
+            for number, row in enumerate(raw, start=1):
+                if not isinstance(row, dict):
+                    raise SliceError(f"wing station {number} must be an object")
+                values = []
+                for key in ("x", "chord", "le", "twist", "height"):
+                    value = row.get(key) or 0.0
+                    if isinstance(value, bool) or not isinstance(value, (int, float)):
+                        raise SliceError(f"wing station {number}: {key} must be a number")
+                    values.append(float(value))
+                rows.append(tuple(values))
+            return Planform.from_stations(rows, smooth=part.get("curve", "smooth") != "straight")  # type: ignore[arg-type]
+        if kind == "drawing":
+            outline = _view_outline(part, "plan_view", "planform drawing", warnings)
+            plan, more = Planform.from_outline(outline, _number(part, "tip_chord") or 20.0, washout, rise)
+            warnings += more
+            return plan
+    except PlanformError as exc:
+        raise SliceError(str(exc)) from exc
+    raise SliceError(f"unknown planform {kind!r}")
+
+
+def _split_planform(plan: Planform, key: dict[str, Any], **options: Any) -> list[float]:
+    """Panel joints, cached: the GUI slices on every edit and curved planforms take a moment to split."""
+    cache_key = json.dumps([key, options], sort_keys=True, default=str)
+    if cache_key in _SPLITS:
+        _SPLITS.move_to_end(cache_key)
+        return _SPLITS[cache_key]
+    try:
+        joints = plan.split(**options)
+    except PlanformError as exc:
+        raise SliceError(str(exc)) from exc
+    _SPLITS[cache_key] = joints
+    while len(_SPLITS) > 32:
+        _SPLITS.popitem(last=False)
+    return joints
+
+
+def _panel_features(
+    plan: Planform,
+    panel: PanelCut,
+    spars: tuple[Spar, ...],
+    channels: tuple[Channel, ...],
+    joiners: tuple[Joiner, ...],
+    bays: tuple[ServoBay, ...],
+    control: ControlSurface | None,
+) -> tuple[tuple[Spar, ...], tuple[Channel, ...], tuple[Joiner, ...], tuple[ServoBay, ...], ControlSurface | None]:
+    """A wing's features as one of its panels has them.
+
+    Spars, channels and the hinge line run straight (seen from above) from their root position to
+    their tip position; joiners go in the root panel; servo bays in the panel they sit in.
+    """
+    span, where = plan.span, f"panel {panel.number}"
+
+    def along(label: str, root: float, tip: float, sa: float = 0.0, sb: float = span) -> tuple[float, float]:
+        ends = []
+        for s in (panel.s0, panel.s1):
+            value = plan.line_position(s, (sa, root), (sb, tip))
+            if not 1.0 <= value <= 99.0:
+                raise SliceError(
+                    f"{where}: {label} runs off the chord ({value:.0f} % of it {s:.0f} mm from the root); set "
+                    "its tip position so it stays inside the wing"
+                )
+            ends.append(round(value, 4))
+        return ends[0], ends[1]
+
+    new_spars = []
+    for number, spar in enumerate(spars, start=1):
+        a, b = along(f"spar {number}", spar.position, spar.at(True))
+        new_spars.append(dataclasses.replace(spar, position=a, position_tip=b))
+    new_channels = []
+    for number, channel in enumerate(channels, start=1):
+        a, b = along(f"servo channel {number}", channel.position, channel.at(True))
+        new_channels.append(dataclasses.replace(channel, position=a, position_tip=b))
+    new_bays = []
+    for number, bay in enumerate(bays, start=1):
+        lo, hi = bay.station - bay.length / 2, bay.station + bay.length / 2
+        if lo >= panel.s0 - 1e-6 and hi <= panel.s1 + 1e-6:
+            new_bays.append(dataclasses.replace(bay, station=bay.station - panel.s0))
+    new_control = None
+    if control is not None:
+        sa = control.start or 0.0
+        sb = control.end if control.end is not None else span
+        if panel.s0 >= sa - 1.0 and panel.s1 <= sb + 1.0:
+            a, b = along(f"the {control.name}'s hinge line", control.position, control.at(True), sa, min(sb, span))
+            new_control = dataclasses.replace(control, position=a, position_tip=b, start=None, end=None)
+    return tuple(new_spars), tuple(new_channels), joiners if panel.s0 < 1e-6 else (), tuple(new_bays), new_control
+
+
 def _wing_part(part: dict[str, Any], machine: Machine, material: Material, placement: Placement) -> _Part:
+    pair = part.get("pair", False)
+    if not isinstance(pair, bool):
+        raise SliceError("pair must be true or false")
+    if not pair:
+        return _wing_cut(part, machine, material, placement)
+    roomy = _roomy(machine)
+    lifted = dataclasses.replace(placement, y_offset=placement.y_offset + LIFT)  # cut clear of the table, then placed
+    first = _wing_cut(part, roomy, material, lifted)
+    second = _wing_cut(part, roomy, material, _opposite(lifted, first, machine))
+    bottom = min(y for path in item_paths(first.toolpath) for z in (first.z_root, first.z_tip)
+                 for _, y in at(path, z, machine.tower_distance))  # fmt: skip
+    gap = _number(part, "nest_gap", 8.0) or 8.0
+    try:
+        combined = combine_parts([first, second], ["as drawn", "opposite hand"], machine, placement, gap,
+                                 bottom - LIFT)  # fmt: skip
+    except MachineLimitError as exc:
+        if not first.jobs:
+            raise
+        raise SliceError(f"panel {first.job}: {exc}. {TAPER_ADVICE}") from exc
+    combined.notes.append(
+        "Both hands come out of this block: the lower core as drawn, the upper one the opposite hand (its root "
+        "at the other end of the block). Mark them before taking them out."
+    )
+    return combined
+
+
+TAPER_ADVICE = (
+    "The wire carries a panel's taper on out to the carriages: use fewer or longer panels (Panels, Shortest panel), "
+    "a larger tip chord, or move the towers closer together"
+)
+LIFT = 5e5
+"""How far above the table parts are cut on their own before they are nested (and moved down)."""
+
+
+def _roomy(machine: Machine) -> Machine:
+    """The machine with room to spare, to cut parts on their own before they are nested and checked."""
+    return dataclasses.replace(machine, x_travel=1e6, y_travel=2e6)
+
+
+def _opposite(placement: Placement, cut: _Part, machine: Machine) -> Placement:
+    """Where the opposite-hand part goes: root at the other carriage, over the same stretch of wire."""
+    lo, hi = min(cut.z_root, cut.z_tip), max(cut.z_root, cut.z_tip)
+    if placement.root_side == "xy":
+        return dataclasses.replace(placement, root_side="uv", root_offset=machine.tower_distance - hi)
+    return dataclasses.replace(placement, root_side="xy", root_offset=lo)
+
+
+def combine_parts(
+    parts: list[_Part],
+    labels: list[str],
+    machine: Machine,
+    placement: Placement,
+    gap: float,
+    base_y: float | None = None,
+    max_height: float | None = None,
+) -> _Part:
+    """Several parts, each cut as if on its own, nested in one block and cut in one go."""
+    items = [NestItem(label, item_paths(p.toolpath), p.z_root, p.z_tip) for p, label in zip(parts, labels)]
+    try:
+        result = nest(items, machine, placement.x_margin, gap, base_y, max_height)
+    except NestError as exc:
+        raise SliceError(str(exc)) from exc
+
+    def move(points: list[Point], dx: float, dy: float) -> list[Point]:
+        return [(x + dx, y + dy) for x, y in points]
+
+    def move_region(r: Region, dx: float, dy: float) -> Region:
+        return Region(move(r.outer, dx, dy), [move(h, dx, dy) for h in r.holes])
+
+    first = parts[0]
+    out = _Part(
+        toolpath=result.toolpath,
+        z_root=result.z0,
+        z_tip=result.z1,
+        root_regions=[],
+        tip_regions=[],
+        kerf=first.kerf,
+        ratio=first.ratio,
+        comments=[f"{len(parts)} parts nested in one block"],
+        warnings=[],
+        stats=dict(first.stats),
+        wing=first.wing,
+        jobs=first.jobs,
+        job=first.job,
+        notes=list(first.notes),
+        views=first.views,
+    )
+    for part, placed, label in zip(parts, result.placed, labels):
+        dx, dy = placed.dx, placed.dy
+        out.root_regions += [move_region(r, dx, dy) for r in part.root_regions]
+        out.tip_regions += [move_region(r, dx, dy) for r in part.tip_regions]
+        out.solid_z += [(part.z_root, part.z_tip)] * len(part.root_regions)
+        out.skins += [(move(a, dx, dy), move(b, dx, dy)) for a, b in part.skins]
+        out.skin_z += [(part.z_root, part.z_tip)] * len(part.skins)
+        out.bays += [(z0, z1, move(a, dx, dy), move(b, dx, dy)) for z0, z1, a, b in part.bays]
+        out.comments += [f"{label}: {line}" for line in part.comments]
+        for warning in part.warnings:
+            if warning not in out.warnings:
+                out.warnings.append(warning)
+    out.warnings += result.warnings
+    out.stats["nest"] = {
+        "parts": len(parts),
+        "columns": 1 + max(pl.column for pl in result.placed),
+        "items": [{"label": label, "column": pl.column + 1} for label, pl in zip(labels, result.placed)],
+    }
+    return out
+
+
+def _wing_cut(part: dict[str, Any], machine: Machine, material: Material, placement: Placement) -> _Part:
     root_airfoil = resolve_airfoil(part.get("root_airfoil", "naca2412"))
     tip_source = part.get("tip_airfoil")
     tip_airfoil = resolve_airfoil(tip_source) if tip_source else root_airfoil
 
-    root_chord = _number(part, "root_chord")
-    span = _number(part, "span")
-    if root_chord is None or span is None:
-        raise SliceError("root_chord and span are required")
-    tip_chord = _number(part, "tip_chord") or root_chord
-    sweep = _number(part, "sweep", 0.0) or 0.0
-    washout = _number(part, "washout", 0.0) or 0.0
     pivot = _number(part, "washout_pivot", 0.25)
     pivot = 0.25 if pivot is None else pivot
-    tip_offset_y = _number(part, "tip_offset_y", 0.0) or 0.0
     n = int(_number(part, "points_per_surface", 80) or 80)
     core = {key: _number(part, key, 0.0) or 0.0 for key in ("sheeting_top", "sheeting_bottom", "le_stock", "te_stock")}
     spars = _items(legacy_spars(part), Spar, "spar")
     channels = _items(part.get("channels") or [], Channel, "servo channel")
     joiners = _items(part.get("joiners") or [], Joiner, "joiner")
     bays = _items(part.get("bays") or [], ServoBay, "servo bay")
+    controls = _items(part.get("controls") or [], ControlSurface, "control surface")
+    if len(controls) > 1:
+        raise SliceError("a wing can have one control surface per cut; split it into panels for more")
+    control = controls[0] if controls else None
+
+    warnings: list[str] = []
+    plan = build_planform(part, warnings)
+    kind = plan.kind
+    forced = []
+    if control is not None:
+        if control.start is not None and control.start >= plan.span - 1:
+            raise SliceError(f"the {control.name} starts beyond the {plan.span:.0f} mm half span")
+        forced = [v for v in (control.start, control.end) if v is not None and 1.0 < v < plan.span - 1.0]
+    count = int(_number(part, "panels", 0) or 0)
+    if count < 0:
+        raise SliceError("panels must be 0 or more")
+    tolerance = max(0.05, _number(part, "tolerance", 2.0) or 2.0)
+    room = machine.tower_distance - placement.root_offset
+    max_panel = _number(part, "max_panel")
+    if max_panel is None:
+        max_panel = float("inf") if kind == "panel" else room
+    if max_panel < 20:
+        raise SliceError(
+            f"a panel {placement.root_offset:g} mm from the carriage does not fit between carriages "
+            f"{machine.tower_distance:g} mm apart"
+        )
+    key = {k: part.get(k) for k in ("planform", "root_chord", "tip_chord", "span", "sweep", "line", "washout",
+                                    "tip_offset_y", "wing_stations", "curve", "plan_view")}  # fmt: skip
+    min_panel = _number(part, "min_panel", 40.0) or 40.0
+    joints = _split_planform(plan, key, forced=forced, count=count, tolerance=tolerance, max_length=max_panel,
+                             min_length=min(min_panel, max_panel))  # fmt: skip
+    panels = plan.panels(joints)
+    for number, bay in enumerate(bays, start=1):  # wherever it sits, whichever panel is being cut
+        for joint in joints[1:-1]:
+            if bay.station - bay.length / 2 < joint < bay.station + bay.length / 2:
+                raise SliceError(f"servo bay {number} crosses the joint between panels {joint:.0f} mm from the root")
+    job = min(max(int(_number(part, "job", 1) or 1), 1), len(panels))
+    panel = panels[job - 1]
+    whole = kind == "panel" and len(panels) == 1
+    if whole:
+        root_chord = _number(part, "root_chord") or panel.root_chord
+        dims = (root_chord, _number(part, "tip_chord") or root_chord, panel.span, _number(part, "sweep", 0.0) or 0.0,
+                _number(part, "washout", 0.0) or 0.0, _number(part, "tip_offset_y", 0.0) or 0.0)  # fmt: skip
+        root_foil, tip_foil = root_airfoil, tip_airfoil
+        features = (spars, channels, joiners, bays, control)
+    else:
+        dims = (panel.root_chord, panel.tip_chord, panel.span, panel.sweep, panel.washout, panel.rise)
+        root_foil = blend(root_airfoil, tip_airfoil, panel.s0 / plan.span)
+        tip_foil = blend(root_airfoil, tip_airfoil, panel.s1 / plan.span)
+        features = _panel_features(plan, panel, spars, channels, joiners, bays, control)
+    root_chord, tip_chord, span, sweep, washout, tip_offset_y = dims
+    spars, channels, joiners, bays, control = features
+    te_thickness = _number(part, "te_thickness", 0.0) or 0.0
+    if te_thickness < 0:
+        raise SliceError("te_thickness must be >= 0")
+    if te_thickness > 0:
+        root_foil = thicken_te(root_foil, te_thickness / root_chord)
+        tip_foil = thicken_te(tip_foil, te_thickness / tip_chord)
 
     try:
         wing = WingPanel(
-            root_airfoil=root_airfoil,
+            root_airfoil=root_foil,
             root_chord=root_chord,
             span=span,
-            tip_airfoil=tip_airfoil,
+            tip_airfoil=tip_foil,
             tip_chord=tip_chord,
             sweep=sweep,
             washout=washout,
@@ -559,6 +978,7 @@ def _wing_part(part: dict[str, Any], machine: Machine, material: Material, place
             channels=channels,
             joiners=joiners,
             bays=bays,
+            control=control,
             **core,
         )
         # Kerf from the material, at the speed each end of the core actually moves.
@@ -571,13 +991,44 @@ def _wing_part(part: dict[str, Any], machine: Machine, material: Material, place
     except (TypeError, ValueError) as exc:  # includes CoreError
         if isinstance(exc, PlacementError):
             raise
-        raise SliceError(str(exc)) from exc
+        prefix = "" if len(panels) == 1 else f"panel {job}: "
+        raise SliceError(f"{prefix}{exc}") from exc
 
     comments = [
-        f"root {root_airfoil.name} {root_chord:g} mm, tip {tip_airfoil.name} {tip_chord:g} mm, span {span:g} mm"
-    ]
-    warnings: list[str] = []
-    stats: dict[str, Any] = {"airfoils": {"root": root_airfoil.name, "tip": tip_airfoil.name}}
+        f"root {root_foil.name} {root_chord:.1f} mm, tip {tip_foil.name} {tip_chord:.1f} mm, span {span:.1f} mm"
+        if not whole else
+        f"root {root_foil.name} {root_chord:g} mm, tip {tip_foil.name} {tip_chord:g} mm, span {span:g} mm"
+    ]  # fmt: skip
+    stats: dict[str, Any] = {"airfoils": {"root": root_foil.name, "tip": tip_foil.name}}
+    notes: list[str] = []
+    views: list[dict[str, Any]] = []
+    labels = [f"Panel {pc.number} of {len(panels)} · {pc.s0:.0f}–{pc.s1:.0f} mm" for pc in panels]
+    if not whole:
+        worst = max(pc.error for pc in panels)
+        comments.insert(0, f"{kind} half wing {plan.span:.0f} mm in {len(panels)} panels; panel {job}: "
+                           f"{panel.s0:.1f}-{panel.s1:.1f} mm from the root")  # fmt: skip
+        stats["planform"] = {
+            "kind": kind,
+            "span": round(plan.span, 1),
+            "panels": len(panels),
+            "panel": job,
+            "from": round(panel.s0, 1),
+            "to": round(panel.s1, 1),
+            "error": round(panel.error, 2),
+            "worst": round(worst, 2),
+        }
+        notes += _panel_notes(plan, panels, panel, root_foil, tip_foil)
+        if kind != "panel" and panel.error > tolerance + 0.05:
+            warnings.append(
+                f"Panel {job} strays up to {panel.error:.1f} mm from the outline (more than the {tolerance:g} mm "
+                f"asked for): the tip curves too tightly for panels of at least {min_panel:g} mm. Sand it fair."
+            )
+        outline = plan.outline(joints=joints)
+        lines = [[(s, -plan.le(s)), (s, -plan.te(s))] for s in joints[1:-1]]
+        current = [(panel.s0, -plan.le(panel.s0)), (panel.s1, -plan.le(panel.s1)), (panel.s1, -plan.te(panel.s1)),
+                   (panel.s0, -plan.te(panel.s0))]  # fmt: skip
+        views.append({"label": f"Planform · panel {job} of {len(panels)}", "rings": [outline], "plan": True,
+                      "marks": [current], "lines": lines})  # fmt: skip
     spec = wing.core_spec()
     built_up = not spec.plain or bool(bay_info)
     if built_up:
@@ -624,12 +1075,37 @@ def _wing_part(part: dict[str, Any], machine: Machine, material: Material, place
                 "trailing edge, where it gets thinner than the sheeting: glue the skins together there or fit a "
                 "trailing-edge strip."
             )
+    if te_thickness > 0:
+        comments.append(f"trailing edge opened to {te_thickness:g} mm")
+    if control is not None:
+        depth = (root_chord * (1 - control.position / 100), tip_chord * (1 - control.at(True) / 100))
+        comments.append(
+            f"{control.name}: hinge line at {control.position:g} % (tip {control.at(True):g} %), {control.describe()}"
+        )
+        stats["control"] = {"name": control.name, "hinge": control.hinge, "bevel": control.bevel,
+                            "depth": {"root": round(depth[0], 1), "tip": round(depth[1], 1)}}  # fmt: skip
+        notes += control_notes(control, depth)
+        if len(panels) > 1:
+            labels[job - 1] += f" · {control.name}"
+    if not whole:
+        for pc in panels:  # name the other panels that carry the surface too
+            if pc.number != job and labels[pc.number - 1].count("·") == 1 and _carries(controls, pc, plan.span):
+                labels[pc.number - 1] += f" · {controls[0].name}"
+    try:
+        toolpath = wing_toolpath(layout, machine)
+    except MachineLimitError as exc:
+        if len(panels) == 1:
+            raise
+        taper = abs(tip_chord - root_chord)
+        raise SliceError(
+            f"panel {job}: {exc}. It is {span:.0f} mm long and its chord changes by {taper:.0f} mm. {TAPER_ADVICE}"
+        ) from exc
     return _Part(
-        toolpath=wing_toolpath(layout, machine),
+        toolpath=toolpath,
         z_root=layout.z_root,
         z_tip=layout.z_tip,
-        root_regions=[Region(layout.root_shape, layout.root_holes)],
-        tip_regions=[Region(layout.tip_shape, layout.tip_holes)],
+        root_regions=[Region(ring, holes) for ring, holes in layout.root_pieces],
+        tip_regions=[Region(ring, holes) for ring, holes in layout.tip_pieces],
         kerf=kerf,
         ratio=ratio,
         comments=comments,
@@ -638,7 +1114,69 @@ def _wing_part(part: dict[str, Any], machine: Machine, material: Material, place
         skins=[(layout.root_skin, layout.tip_skin)] if built_up else [],
         bays=layout.bays,
         wing=wing,
+        jobs=labels if len(panels) > 1 else [],
+        job=job,
+        notes=notes,
+        views=views,
     )
+
+
+def _carries(controls: tuple[ControlSurface, ...], panel: PanelCut, span: float) -> bool:
+    if not controls:
+        return False
+    sa, sb = controls[0].start or 0.0, controls[0].end if controls[0].end is not None else span
+    return panel.s0 >= sa - 1.0 and panel.s1 <= sb + 1.0
+
+
+def _panel_notes(plan: Planform, panels: list[PanelCut], panel: PanelCut, root: Airfoil, tip: Airfoil) -> list[str]:
+    k, n = panel.number, len(panels)
+    notes = [
+        f"Panel {k} of {n} runs from {panel.s0:.0f} to {panel.s1:.0f} mm out from the wing root: chord "
+        f"{panel.root_chord:.1f} mm at its root and {panel.tip_chord:.1f} mm at its tip, sweep {panel.sweep:.1f} mm"
+        + (f", washout {panel.washout:.2f}°" if abs(panel.washout) > 0.005 else "")
+        + (f", tip {panel.rise:.1f} mm higher" if abs(panel.rise) > 0.05 else "")
+        + "."
+    ]
+    if root.name != tip.name or "/" in root.name:
+        notes.append(f"Its root section is {root.name} and its tip section {tip.name}, blended along the wing.")
+    if plan.kind != "panel" and panel.error > 0.05:
+        notes.append(
+            f"Its straight edges stray up to {panel.error:.1f} mm from the curved outline between the joints: sand "
+            "the leading and trailing edges fair after gluing the panels together."
+        )
+    if k > 1:
+        notes.append(f"Glue its root face to the tip face of panel {k - 1}; the sections match there.")
+    if k < n:
+        notes.append(f"Mark its tip face before you take it off the machine: panel {k + 1} is glued to it.")
+    notes.append("Cut every panel again with “Root faces: UV carriage” for the other wing half.")
+    return notes
+
+
+def control_notes(control: ControlSurface, depth: tuple[float, float]) -> list[str]:
+    """How to finish and hinge a control surface that came off in the cut."""
+    notes = [
+        (
+            f"The {control.name} comes off in the same cut, along a straight hinge line: {depth[0]:.0f} mm deep at the "
+            f"root and {depth[1]:.0f} mm at the tip. Mark which way round it goes before separating the pieces."
+        )
+    ]
+    if control.bevel == 0:
+        notes.append(
+            "The hinge cut is straight, one kerf wide: sand a bevel on the surface's front face for the throw you need."
+        )
+    elif control.hinge == "center":
+        notes.append(
+            f"Hinge it on the centre line (pinned or CA hinges): the {control.bevel:g}° V above and below lets it "
+            f"swing {control.bevel:g}° each way."
+        )
+    else:
+        other = "bottom" if control.hinge == "top" else "top"
+        swing = "down" if control.hinge == "top" else "up"
+        notes.append(
+            f"Hinge it with tape along the {control.hinge} surface, where the pieces meet: the {control.bevel:g}° V in "
+            f"the {other} surface lets it swing {control.bevel:g}° {swing}; the other way it opens freely."
+        )
+    return notes
 
 
 def legacy_spars(part: dict[str, Any]) -> list[Any]:
@@ -668,7 +1206,7 @@ def _items(raw: Any, cls: type, label: str) -> tuple[Any, ...]:
             raise SliceError(f"{label} {number} must be an object")
         values = {k: v for k, v in item.items() if k in allowed}
         for key, value in values.items():
-            if key in ("side", "shape"):
+            if key in ("side", "shape", "hinge", "name"):
                 if not isinstance(value, str):
                     raise SliceError(f"{label} {number}: {key} must be text")
             elif value is not None and (isinstance(value, bool) or not isinstance(value, (int, float))):
@@ -831,13 +1369,90 @@ def _shape_part(part: dict[str, Any], machine: Machine, material: Material, plac
     )
 
 
+def _nest_part(part: dict[str, Any], machine: Machine, material: Material, placement: Placement) -> _Part:
+    raw = part.get("items") or []
+    if not isinstance(raw, list):
+        raise SliceError("the parts must be a list")
+    if not raw:
+        raise SliceError("add the wing panels and 2D shapes to cut from this block")
+    roomy = _roomy(machine)
+    # Cut each part on its own well clear of the table (it is stacked afresh when nested).
+    base = Placement("xy", placement.root_offset, placement.x_margin, placement.y_offset + LIFT)
+    parts: list[_Part] = []
+    labels: list[str] = []
+    for number, item in enumerate(raw, start=1):
+        if not isinstance(item, dict):
+            raise SliceError(f"part {number} must be an object")
+        source = item.get("source")
+        if not isinstance(source, dict) or not isinstance(source.get("part"), dict):
+            raise SliceError(f"part {number}: choose a wing panel or a 2D shape")
+        sub = dict(source["part"], pair=False)
+        kind = sub.get("type", "wing")
+        if kind not in ("wing", "shape"):
+            raise SliceError(f"part {number}: only wing panels and 2D shapes can be nested")
+        title = str(source.get("title") or ("Wing panel" if kind == "wing" else "2D shape"))
+        values = {}
+        for key, default in (("copies", 1), ("job", 1)):
+            value = item.get(key, default)
+            if value is None:
+                value = default
+            if isinstance(value, bool) or not isinstance(value, (int, float)) or value != int(value):
+                raise SliceError(f"part {number}: {key} must be a whole number")
+            values[key] = int(value)
+        copies, job = values["copies"], values["job"]
+        if not 1 <= copies <= 50 or job < 0:
+            raise SliceError(f"part {number}: copies must be 1 to 50 and the panel 0 or more")
+        opposite = item.get("opposite", False)
+        if not isinstance(opposite, bool):
+            raise SliceError(f"part {number}: opposite hand must be true or false")
+        build = _wing_cut if kind == "wing" else _shape_part
+
+        def cut(panel: int, build=build, sub=sub, opposite=opposite, number=number) -> _Part:
+            this = dict(sub, job=panel)
+            try:
+                done = build(this, roomy, material, base)
+                return build(this, roomy, material, _opposite(base, done, machine)) if opposite else done
+            except (SliceError, PlacementError, ShapeError) as exc:
+                raise SliceError(f"part {number}: {exc}") from exc
+
+        first = cut(job or 1)
+        panels = list(range(1, len(first.jobs) + 1)) if job == 0 and first.jobs else [job or 1]
+        for panel in panels:
+            done = first if panel == (job or 1) else cut(panel)
+            label = title + (f" panel {panel}" if done.jobs else "") + (" (opposite hand)" if opposite else "")
+            for copy_number in range(1, copies + 1):
+                parts.append(done)
+                labels.append(label + (f" #{copy_number}" if copies > 1 else ""))
+    gap = _number(part, "gap", 8.0) or 8.0
+    out = combine_parts(parts, labels, machine, placement, gap, placement.y_offset, _number(part, "max_height"))
+    out.jobs, out.job, out.views = [], 1, []
+    out.stats = {"nest": out.stats["nest"]}
+    out.comments.insert(0, f"block from {out.z_root:g} to {out.z_tip:g} mm along the wire")
+    order = {}
+    for entry in out.stats["nest"]["items"]:
+        column = entry["column"]
+        order[column] = order.get(column, 0) + 1
+        place = "at the bottom" if order[column] == 1 else f"number {order[column]} from the bottom"
+        out.notes.append(f"{entry['label']}: column {column} from the back, {place}.")
+    out.notes.append("Every part spans the block from end to end; mark each before taking it out.")
+    near = out.z_root
+    for label, face in (("Near end", True), ("Far end", False)):
+        rings = []
+        for (zr, zt), r, t in zip(out.solid_z, out.root_regions, out.tip_regions):
+            use_root = (abs(zr - near) < abs(zt - near)) == face
+            rings += (r if use_root else t).rings()
+        out.views.append({"label": label, "rings": rings})
+    return out
+
+
 def _finish(
     project: dict[str, Any], kind: str, machine: Machine, material: Material, placement: Placement, built: _Part
 ) -> SliceResult:
     toolpath = built.toolpath
     kerf_root, kerf_tip = built.kerf
     ratio_root, ratio_tip = built.ratio
-    title = str(project.get("title") or {"wing": "Wing panel", "shape": "2D shape", "fuselage": "Fuselage"}[kind])
+    title = str(project.get("title") or {"wing": "Wing panel", "shape": "2D shape", "fuselage": "Fuselage",
+                                         "nest": "Block of parts"}[kind])  # fmt: skip
     gcode = generate_gcode(
         toolpath,
         machine,
@@ -917,9 +1532,15 @@ def _finish(
             "z_root": _r(built.z_root),
             "z_tip": _r(built.z_tip),
             "solids": [
-                {"root": region_json(r), "tip": region_json(tp)} for r, tp in zip(built.root_regions, built.tip_regions)
+                {"root": region_json(r), "tip": region_json(tp)}
+                | ({"z_root": _r(built.solid_z[k][0]), "z_tip": _r(built.solid_z[k][1])} if built.solid_z else {})
+                for k, (r, tp) in enumerate(zip(built.root_regions, built.tip_regions))
             ],
-            "skins": [{"root": _pts(r), "tip": _pts(tp)} for r, tp in built.skins],
+            "skins": [
+                {"root": _pts(r), "tip": _pts(tp)}
+                | ({"z_root": _r(built.skin_z[k][0]), "z_tip": _r(built.skin_z[k][1])} if built.skin_z else {})
+                for k, (r, tp) in enumerate(built.skins)
+            ],
             "bays": [
                 {
                     "z0": _r(z0),
@@ -937,7 +1558,12 @@ def _finish(
         "jobs": [{"label": label} for label in built.jobs],
         "job": built.job,
         "notes": built.notes,
-        "views": [{"label": v["label"], "rings": [_pts(r) for r in v["rings"]]} for v in built.views],
+        "views": [
+            {"label": v["label"], "rings": [_pts(r) for r in v["rings"]]}
+            | ({"plan": True} if v.get("plan") else {})
+            | {k: [_pts(r) for r in v[k]] for k in ("marks", "lines") if v.get(k)}
+            for v in built.views
+        ],
         "block": block,
         "path": {"t": times, "xy": xy_pts, "uv": uv_pts, "cut": cut},
     }
