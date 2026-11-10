@@ -26,6 +26,7 @@
       <button class="ghost" id="btn-save" title="Save project">Save</button>
       <button class="ghost" id="btn-kerf" title="Calibration: kerf test">Kerf test</button>
       <button class="danger" id="btn-estop" hidden title="Feed hold + reset: stops motion, wire off">STOP</button>
+      <button class="ghost" id="btn-quit" hidden title="Stop open_HOWI (the machine is disconnected first)">Quit</button>
     </div>
   </header>
 
@@ -54,9 +55,12 @@
         <span class="time" id="scrub-time">0:00 / 0:00</span>
         <select id="play-speed" aria-label="Playback speed">
           <option value="1">1×</option><option value="5">5×</option>
-          <option value="20" selected>20×</option><option value="60">60×</option>
+          <option value="20" selected>20×</option><option value="60">60×</option><option value="200">200×</option>
         </select>
+        <button id="btn-timelapse" title="Every cut of the part, one after the other, in about 15 seconds">Timelapse</button>
+        <button id="btn-video" title="Play the timelapse and save it as a video file">Save video</button>
       </div>
+      <div class="caption" id="caption" hidden></div>
     </section>
 
     <aside class="sidebar">

@@ -44,10 +44,36 @@ open_HOWI is a free alternative that:
 
 Not there yet: rotating a swept panel in the block ("rotate planform").
 
+## Install
+
+Download the installer for your computer from the
+[latest release](https://github.com/ccarl0/open_HOWI/releases/latest). No Python needed:
+
+| Your computer | Download | Then |
+|---|---|---|
+| Windows 10/11 | `open_HOWI-…-windows-setup.exe` | Run it and follow the steps; start open_HOWI from the Start menu. Windows may warn about an unknown publisher: *More info → Run anyway*. (A portable `.zip` is there too.) |
+| Mac with Apple silicon | `open_HOWI-…-macos-arm64.dmg` | Open it and drag open_HOWI to Applications. The first time, right-click it and choose *Open*: the app is not signed by Apple. |
+| Linux (x86-64) | `open_HOWI-…-linux-x86_64.tar.gz` | Unpack it and run `./install.sh`. open_HOWI appears in your applications menu (`./install.sh --uninstall` removes it). |
+
+open_HOWI opens in your web browser and runs only on your computer. Starting it again while it runs
+just opens it again. Stop it with **Quit** (top right) or by closing its window.
+
+**With Python 3.11 or newer** (Intel Macs, a Raspberry Pi next to the machine, or any other system):
+
+```bash
+pipx install git+https://github.com/ccarl0/open_HOWI   # or: pip install open_howi-<version>-py3-none-any.whl
+open-howi            # starts the app in your browser (openhowi gui does the same, without Quit)
+```
+
+The installers are built by GitHub Actions (`.github/workflows/release.yml`) for every version tag:
+`git tag v0.1.0 && git push origin v0.1.0` builds them all, checks each one starts, and publishes the
+release. `packaging/` holds the PyInstaller recipe, the Windows installer script and the Linux
+install script.
+
 ## The app
 
 ```bash
-pip install .        # Python 3.11+
+pip install .        # from a checkout; Python 3.11+
 openhowi gui         # opens http://localhost:8765 in your browser
 ```
 
@@ -57,10 +83,12 @@ the `openhowi` process. It works offline.
 | Tab | What it does |
 |---|---|
 | **Prepare** | Choose a **machine** and a **material** preset, then set up the part: a **wing** (a straight panel, or an elliptical, curved or drawn half wing split into straight panels; root/tip airfoils from the built-in database, NACA or any `.dat` file, chords, span, sweep, washout, sheeting allowance, LE/TE stock, trailing-edge thickness, spar slots, servo channels, joiner holes, servo bays and a control surface), a **fuselage** (stations or side/top drawings, cut in two views, turned or as rounded lengthwise segments), a **2D shape** from a DXF or SVG drawing, or a **block of parts** nested in one foam block. The part, the foam block and both carriage paths update live in 3D as you type. |
-| **Preview** | Estimated time, cut lengths, kerf at each end, peak carriage speeds, the foam block you need and where to put it. Scrub or play back the cut with the timeline. Export G-code. |
+| **Preview** | Estimated time, cut lengths, kerf at each end, peak carriage speeds, the foam block you need and where to put it. Scrub or play back the cut with the timeline: the cut appears in the foam as the wire passes, and at the end the pieces lift out of the block. **Timelapse** plays every cut of the part in about 15 seconds, with what to do at each pause (the block turns for a turned fuselage); **Save video** records it to share. Export G-code. |
 | **Device** | Connect over USB (or to the built-in **simulator**), live position, jog both carriages together or separately, home, unlock, set zero, wire on/off, start/pause/resume/stop the job, console. When a job stops for you (e.g. to turn the foam), it says what to do; press Resume. A **STOP** button (feed hold + reset, wire off) stays in the top bar while connected. |
 
 ![Device tab: a job running on the simulator](docs/device.png)
+
+![Timelapse: the cut appears in the foam as the wire passes; a turned fuselage, its block turning between passes](docs/timelapse.png)
 
 **Presets, like a slicer's printer/filament profiles:**
 
@@ -368,7 +396,7 @@ openhowi naca 2412 -o naca2412.dat                   # write a NACA 4-digit airf
 - Homing/limit-aware placement and a block-size optimiser
 - Fuselages: sections from drawn formers (lofts between two different drawings), fin slots and hatch lines
 - Continuous rotary (lathe-style) cutting for bodies of revolution such as spinners
-- Packaged desktop builds (one-click install on Windows/macOS)
+- Signed installers (Windows code signing, Apple notarisation) and an Intel Mac build
 
 ## Development
 
@@ -389,6 +417,7 @@ ruff check src tests && ruff format --check src tests
 | `material`, `presets`, `project`, `calibration`, `template` | Slicer layer: presets, kerf model, project slicing, kerf test, servo bay template and fuselage plans |
 | `simulator`, `controller`, `sender` | Simulated GRBL, the threaded device controller, the CLI streamer |
 | `server`, `web/` | Local HTTP API and the browser UI (three.js r179 vendored under `web/vendor`) |
+| `desktop`, `packaging/` | The packaged app's launcher (one copy, in the browser) and the installers |
 
 ## License
 

@@ -98,6 +98,8 @@ class CutJob:
     """What to do, step by step: {"title", "notes", "svg"}."""
     jig: dict[str, float] | None = None
     """Turned by hand: the end plates (sides, apothem, circumradius, thickness, block half side)."""
+    turn: dict[str, float] | None = None
+    """Turned: the axis the block turns about (Y and Z; it runs along X) and the turn per pass (degrees)."""
 
 
 KerfFn = Callable[[tuple[float, float]], tuple[float, float]]
@@ -658,4 +660,5 @@ def _turned(fuse: Fuselage, opt: CutOptions, machine: Machine, placement: Placem
         f"The {sides}-sided fuselage it cuts",
         steps,
         jig,
+        {"y": y_axis, "z": zc, "step": step},
     )

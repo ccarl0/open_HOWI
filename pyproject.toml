@@ -24,6 +24,7 @@ dev = ["pytest>=8"]
 
 [project.scripts]
 openhowi = "openhowi.cli:main"
+open-howi = "openhowi.desktop:main"
 
 [tool.setuptools.dynamic]
 version = { attr = "openhowi.__version__" }

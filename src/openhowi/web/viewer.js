@@ -94,7 +94,10 @@ export class Viewer {
     else this.render();
   }
 
-  render() { this.renderer.render(this.scene, this.camera); }
+  render() {
+    this.renderer.render(this.scene, this.camera);
+    if (this.onFrame) this.onFrame(this.canvas);  // e.g. a video recorder copying the frame
+  }
 
   setMachine(machine) {
     const changed = ['tower_distance', 'x_travel', 'y_travel'].some((k) => machine[k] !== this.machine[k]);
@@ -175,18 +178,33 @@ export class Viewer {
   rebuild() {
     disposeGroup(this.partGroup);
     disposeGroup(this.pathGroup);
+    this.pieces = [];
+    this.cuts = [];
+    this.turn = null;
     const r = this.result;
     if (!r) { this.render(); return; }
     const D = r.machine.tower_distance;
+
+    // The block and everything in it sit in a pivot, so a block turned between passes (a turned
+    // fuselage) can turn about its axis, which runs along X.
+    this.turn = r.turn || null;
+    this.pivot = new THREE.Group();
+    this.content = new THREE.Group();
+    if (this.turn) {
+      this.pivot.position.set(0, this.turn.y, this.turn.z);
+      this.content.position.set(0, -this.turn.y, -this.turn.z);
+    }
+    this.pivot.add(this.content);
+    this.partGroup.add(this.pivot);
 
     // Foam block
     const b = r.block;
     const box = new THREE.BoxGeometry(b.x1 - b.x0, b.y1 - b.y0, b.z1 - b.z0);
     box.translate((b.x0 + b.x1) / 2, (b.y0 + b.y1) / 2, (b.z0 + b.z1) / 2);
-    this.partGroup.add(new THREE.Mesh(box, new THREE.MeshStandardMaterial({
+    this.content.add(new THREE.Mesh(box, new THREE.MeshStandardMaterial({
       color: this.colors.block, transparent: true, opacity: 0.12, depthWrite: false,
     })));
-    this.partGroup.add(new THREE.LineSegments(new THREE.EdgesGeometry(box),
+    this.content.add(new THREE.LineSegments(new THREE.EdgesGeometry(box),
       new THREE.LineBasicMaterial({ color: this.colors.block, transparent: true, opacity: 0.7 })));
 
     // Part: each solid is a loft between its root and tip faces (outline and holes), plus end caps
@@ -197,7 +215,10 @@ export class Viewer {
       ...(ghosted ? { transparent: true, opacity: 0.28, depthWrite: false } : {}),
     });
     // Nested parts each have their own root and tip positions
-    for (const solid of r.part.solids) this.addSolid(solid, solid.z_root ?? r.part.z_root, solid.z_tip ?? r.part.z_tip, partMat);
+    for (const solid of r.part.solids) {
+      const obj = this.addSolid(solid, solid.z_root ?? r.part.z_root, solid.z_tip ?? r.part.z_tip, partMat);
+      if (!ghosted) this.pieces.push({ obj, role: solid.role || 'part' });
+    }
     // Servo bays (cut by hand): the pocket, standing slightly proud of the surface so it shows
     const bayMat = new THREE.MeshStandardMaterial({
       color: this.colors.bay, roughness: 0.7, side: THREE.DoubleSide, transparent: true, opacity: 0.85,
@@ -205,14 +226,14 @@ export class Viewer {
     for (const bay of r.part.bays || []) this.addSolid(bay, bay.z0, bay.z1, bayMat);
     // The finished shape (e.g. a fuselage after sanding), faint, lofted through its sections
     const ghostMat = new THREE.MeshStandardMaterial({ color: this.colors.part, roughness: 0.6, side: THREE.DoubleSide });
-    for (const rings of r.part.ghosts || []) this.addLoft(rings, ghostMat);
+    for (const rings of r.part.ghosts || []) this.pieces.push({ obj: this.addLoft(rings, ghostMat), role: 'part' });
     // Finished outline (e.g. the sheeted airfoil) around the core, at both faces
     const skinMat = new THREE.LineBasicMaterial({ color: this.colors.frame, transparent: true, opacity: 0.9 });
     for (const skin of r.part.skins || []) {
       for (const [pts, z] of [[skin.root, skin.z_root ?? r.part.z_root], [skin.tip, skin.z_tip ?? r.part.z_tip]]) {
         const geom = new THREE.BufferGeometry();
         geom.setAttribute('position', new THREE.Float32BufferAttribute(pts.flatMap(([x, y]) => [x, y, z]), 3));
-        this.partGroup.add(new THREE.LineLoop(geom, skinMat));
+        this.content.add(new THREE.LineLoop(geom, skinMat));
       }
     }
 
@@ -228,7 +249,101 @@ export class Viewer {
       this.pathGroup.add(done);
       this.overlays.push(done);
     }
+    this.buildCuts(r);
     this.setProgress(p.t.length - 1, 1);
+  }
+
+  // The surface the wire sweeps through the foam (from one end of the block to the other), drawn as far
+  // as the cut has got. Each pass between turns of the block is its own mesh, fixed to the block.
+  buildCuts(r) {
+    const p = r.path;
+    const D = r.machine.tower_distance;
+    const { z0, z1 } = r.block;
+    const stops = p.stops || [];
+    this.cutMat = new THREE.MeshStandardMaterial({
+      color: this.colors.wire, roughness: 0.9, side: THREE.DoubleSide, transparent: true, opacity: 0.38, depthWrite: false,
+    });
+    const at = (i, z) => {
+      const [ax, ay] = p.xy[i]; const [bx, by] = p.uv[i];
+      return [ax + (bx - ax) * (z / D), ay + (by - ay) * (z / D), z];
+    };
+    const bounds = [0, ...stops.map((st) => st.i), p.t.length - 1];
+    for (let k = 0; k + 1 < bounds.length; k++) {
+      const from = bounds[k]; const to = bounds[k + 1];
+      const verts = []; const idx = []; const counts = [0];
+      for (let i = from + 1; i <= to; i++) {
+        if (p.cut[i]) {
+          const n = verts.length / 3;
+          verts.push(...at(i - 1, z0), ...at(i - 1, z1), ...at(i, z0), ...at(i, z1));
+          idx.push(n, n + 1, n + 2, n + 1, n + 3, n + 2);
+        }
+        counts.push(idx.length);
+      }
+      const geom = new THREE.BufferGeometry();
+      geom.setAttribute('position', new THREE.Float32BufferAttribute(verts, 3));
+      geom.setIndex(idx);
+      geom.computeVertexNormals();
+      const mesh = new THREE.Mesh(geom, this.cutMat);
+      // Cut while the block was turned by this pass's angle: undo that turn, so it moves with the block.
+      const angle = this.passAngle(k);
+      let holder = mesh;
+      if (this.turn && angle) {
+        holder = new THREE.Group();
+        holder.position.set(0, this.turn.y, this.turn.z);
+        holder.rotation.x = -THREE.MathUtils.degToRad(angle);
+        const back = new THREE.Group();
+        back.position.set(0, -this.turn.y, -this.turn.z);
+        back.add(mesh);
+        holder.add(back);
+      }
+      this.content.add(holder);
+      this.cuts.push({ geom, from, to, counts });
+    }
+    this.showCuts(this.cutsShown ?? false);
+  }
+
+  // How far the block is turned during pass k (0 for the first), in degrees.
+  passAngle(k) {
+    if (!this.turn || k <= 0) return 0;
+    const st = (this.path.stops || [])[k - 1];
+    return st && st.angle != null ? st.angle : k * this.turn.step;
+  }
+
+  // Which pass segment `i` belongs to (the pass ending at a stop includes the stop's point).
+  passAt(i) {
+    return (this.path.stops || []).filter((st) => st.i < i).length;
+  }
+
+  showCuts(on) {
+    this.cutsShown = on;
+    for (const c of this.cuts || []) c.geom.setDrawRange(0, on ? c.geom.index.count : 0);
+    if (this.cutMat) this.cutMat.visible = on;
+    if (this.path && on) this.setProgress(this.progress ?? this.path.t.length - 1, 1);
+    else this.render();
+  }
+
+  setTurn(angle) {
+    if (this.pivot) this.pivot.rotation.x = THREE.MathUtils.degToRad(angle);
+  }
+
+  // The finished pieces lifted out of the block (f from 0 to 1); a control surface drops off its panel.
+  explode(f) {
+    const r = this.result;
+    if (!r || !this.pieces) return;
+    const lift = (r.block.y1 - r.block.y0) + 30;
+    const e = f * f * (3 - 2 * f);  // ease in and out
+    this.pieces.forEach(({ obj, role }, k) => {
+      const delay = Math.min(0.4, k * 0.08);
+      const g = Math.max(0, Math.min(1, (e - delay) / (1 - delay)));
+      if (role === 'surface') obj.position.set(-12 * g, (lift - 14) * g, 0);
+      else obj.position.set(0, lift * g, 0);
+    });
+    if (this.turn && this.path) {  // the last turn brings the block back upright to lift the part out
+      const last = this.passAngle((this.path.stops || []).length);
+      this.setTurn(last + (this.turn.step) * Math.min(1, f * 2.5));
+    }
+    if (this.cutMat) this.cutMat.opacity = 0.38 * (1 - 0.6 * e);
+    this.render();
   }
 
   // A surface through rings of 3D points with the same count.
@@ -247,10 +362,14 @@ export class Viewer {
     geom.setAttribute('position', new THREE.Float32BufferAttribute(verts, 3));
     geom.setIndex(idx);
     geom.computeVertexNormals();
-    this.partGroup.add(new THREE.Mesh(geom, material));
+    const mesh = new THREE.Mesh(geom, material);
+    (this.content || this.partGroup).add(mesh);
+    return mesh;
   }
 
   addSolid(solid, zr, zt, material) {
+    const group = new THREE.Group();
+    (this.content || this.partGroup).add(group);
     // Rings without a repeated end point; root and tip rings are index-matched.
     const ring = (pts) => (pts.length > 2 && pts[0][0] === pts.at(-1)[0] && pts[0][1] === pts.at(-1)[1] ? pts.slice(0, -1) : pts);
     const rootRings = [solid.root.outer, ...solid.root.holes].map(ring);
@@ -269,7 +388,7 @@ export class Viewer {
       side.setAttribute('position', new THREE.Float32BufferAttribute(verts, 3));
       side.setIndex(idx);
       side.computeVertexNormals();
-      this.partGroup.add(new THREE.Mesh(side, material));
+      group.add(new THREE.Mesh(side, material));
     });
     for (const [rings, z] of [[rootRings, zr], [tipRings, zt]]) {
       const [outer, ...holes] = rings.map((pts) => pts.map(([x, y]) => new THREE.Vector2(x, y)));
@@ -279,8 +398,9 @@ export class Viewer {
       cap.setAttribute('position', new THREE.Float32BufferAttribute(all.flatMap((p) => [p.x, p.y, z]), 3));
       cap.setIndex(tris.flat());
       cap.computeVertexNormals();
-      this.partGroup.add(new THREE.Mesh(cap, material));
+      group.add(new THREE.Mesh(cap, material));
     }
+    return group;
   }
 
   // Show the cut up to segment `i` (index into path arrays), `frac` of the way into it.
@@ -288,7 +408,15 @@ export class Viewer {
     const p = this.path;
     if (!p) return;
     i = Math.max(0, Math.min(i, p.t.length - 1));
+    this.progress = i;
     for (const line of this.overlays) line.geometry.setDrawRange(0, i + 1);
+    if (this.cutsShown) {
+      for (const c of this.cuts) c.geom.setDrawRange(0, i <= c.from ? 0 : c.counts[Math.min(i, c.to) - c.from]);
+    }
+    if (this.turn) this.setTurn(this.passAngle(this.passAt(i)));
+    if (this.pieces) for (const { obj } of this.pieces) obj.position.set(0, 0, 0);
+    // While the cut is under way the swept surface shows clearly; once it is done it fades, so the part shows.
+    if (this.cutMat) this.cutMat.opacity = i >= p.t.length - 1 ? 0.12 : 0.38;
     const lerp = (a, b) => [a[0] + (b[0] - a[0]) * frac, a[1] + (b[1] - a[1]) * frac];
     const j = Math.min(i + 1, p.t.length - 1);
     this.setWire(lerp(p.xy[i], p.xy[j]), lerp(p.uv[i], p.uv[j]));

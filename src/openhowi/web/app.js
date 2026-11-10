@@ -62,7 +62,7 @@ const state = {
   info: null, presets: { machine: [], material: [] }, airfoils: { naca: [], library: [], database: [] }, foilDb: null,
   project: null, result: null, sliceSeq: 0, sliceTimer: null, tab: 'prepare', stash: {}, drawingInfo: null, viewInfo: {},
   device: { connected: false, status: { state: 'Disconnected' }, job: null, lastLog: 0, polling: false },
-  scrub: { t: Infinity, playing: false },
+  scrub: { t: Infinity }, run: null, shown: null, caption: '',
 };
 
 // Project ---------------------------------------------------------------------
@@ -130,12 +130,16 @@ async function slice() {
   try {
     const result = await api('/api/slice', { project: state.project });
     if (seq !== state.sliceSeq) return;
+    stopPlayback();
     state.result = result;
+    state.shown = null;
     showBanner(null);
     state.viewer.setResult(result);
   } catch (err) {
     if (seq !== state.sliceSeq) return;
+    stopPlayback();
     state.result = null;
+    state.shown = null;
     showBanner(err.message);
     const m = state.project.machine;
     state.viewer.setMachine({ tower_distance: m.tower_distance, x_travel: m.x_travel, y_travel: m.y_travel });
@@ -814,7 +818,7 @@ async function exportAllCuts() {
 // Preview scrubber -------------------------------------------------------------------
 
 function updateScrubber() {
-  const r = state.result;
+  const r = state.shown || state.result;
   $('#scrubber').hidden = !(r && state.tab === 'preview');
   if (!r) return;
   const total = r.path.t.at(-1);
@@ -825,7 +829,7 @@ function updateScrubber() {
 }
 
 function showTime(t) {
-  const p = state.result.path;
+  const p = (state.shown || state.result).path;
   let lo = 0; let hi = p.t.length - 1;
   while (lo < hi) { const mid = (lo + hi + 1) >> 1; if (p.t[mid] <= t) lo = mid; else hi = mid - 1; }
   const next = Math.min(lo + 1, p.t.length - 1);
@@ -833,24 +837,227 @@ function showTime(t) {
   state.viewer.setProgress(lo, span > 0 ? Math.min(1, (t - p.t[lo]) / span) : 0);
 }
 
-function togglePlay() {
-  const r = state.result;
-  if (!r) return;
-  state.scrub.playing = !state.scrub.playing;
-  $('#btn-play').textContent = state.scrub.playing ? '❚❚' : '▶';
-  if (!state.scrub.playing) return;
-  const total = r.path.t.at(-1);
-  if (state.scrub.t >= total) state.scrub.t = 0;
+// Playback ----------------------------------------------------------------------------
+// One cut plays from the scrubber's time to its end: the wire moves at `rate` seconds of cutting per
+// second, stops hold for a moment with their message (the block turns, for a turned fuselage), and at
+// the end the finished pieces lift out of the block. The timelapse plays every cut of the part in turn,
+// fitted into about 15 seconds, and can be recorded as a video.
+
+const TIMELAPSE_SECONDS = 15;
+const frame = () => new Promise((ok) => requestAnimationFrame(ok));
+const ease = (f) => f * f * (3 - 2 * f);
+
+function showCaption(text) {
+  state.caption = text || '';
+  $('#caption').textContent = state.caption;
+  $('#caption').hidden = !state.caption;
+}
+
+function setPlayButtons() {
+  const run = state.run;
+  $('#btn-play').textContent = run && run.kind === 'play' ? '❚❚' : '▶';
+  $('#btn-play').title = run && run.kind === 'play' ? 'Pause' : 'Play';
+  $('#btn-timelapse').textContent = run && run.kind === 'timelapse' && !run.record ? 'Stop' : 'Timelapse';
+  $('#btn-video').textContent = run && run.record ? 'Stop recording' : 'Save video';
+  $('#btn-timelapse').disabled = Boolean(run && run.record);
+  $('#btn-video').disabled = Boolean(run && run.kind === 'timelapse' && !run.record) || !window.MediaRecorder;
+}
+
+function stopPlayback() {
+  if (state.run) state.run.cancelled = true;
+}
+
+// Show the frames of `ms` milliseconds, calling step(f) with f from 0 to 1. False when cancelled.
+async function animate(ms, run, step) {
+  const start = performance.now();
+  for (;;) {
+    const now = await frame();
+    if (run.cancelled) return false;
+    const f = Math.min(1, (now - start) / ms);
+    step(f);
+    if (f >= 1) return true;
+  }
+}
+
+async function playCut(rate, run) {
+  const r = state.shown;
+  const p = r.path;
+  const total = p.t.at(-1);
+  const stops = p.stops || [];
+  let k = stops.findIndex((st) => st.t > state.scrub.t + 1e-6 || (run.fromStart && st.t >= state.scrub.t));
+  if (k < 0) k = stops.length;
+  const v = state.viewer;
   let last = performance.now();
-  const step = (now) => {
-    if (!state.scrub.playing || !state.result) return;
-    state.scrub.t = Math.min(total, state.scrub.t + ((now - last) / 1000) * Number($('#play-speed').value));
+  while (state.scrub.t < total) {
+    const now = await frame();
+    if (run.cancelled) return false;
+    const t = state.scrub.t + ((now - last) / 1000) * rate;
     last = now;
+    const stop = stops[k];
+    if (stop && t >= stop.t) {  // hold here: say what happens, and turn the block
+      state.scrub.t = stop.t;
+      updateScrubber();
+      showCaption(stop.message);
+      const a = v.passAngle(k); const b = v.passAngle(k + 1);
+      const ok = await animate(1700, run, (f) => {
+        if (r.turn) v.setTurn(a + (b - a) * ease(Math.min(1, f * 1.4)));
+        v.render();
+      });
+      showCaption(run.title || '');
+      if (!ok) return false;
+      k += 1;
+      last = performance.now();
+      continue;
+    }
+    state.scrub.t = Math.min(total, t);
     updateScrubber();
-    if (state.scrub.t >= total) { togglePlay(); return; }
-    requestAnimationFrame(step);
+  }
+  return animate(1800, run, (f) => v.explode(f));
+}
+
+async function togglePlay() {
+  if (state.run) {
+    const wasPlay = state.run.kind === 'play';
+    stopPlayback();
+    if (wasPlay) return;
+    await frame();
+  }
+  if (!state.result) return;
+  state.shown = state.result;
+  const total = state.shown.path.t.at(-1);
+  if (state.scrub.t >= total) state.scrub.t = 0;
+  const run = { kind: 'play', cancelled: false, fromStart: state.scrub.t === 0 };
+  state.run = run;
+  setPlayButtons();
+  await playCut(Number($('#play-speed').value), run);
+  if (state.run === run) state.run = null;
+  setPlayButtons();
+}
+
+// Every cut of the part, one after the other, in about TIMELAPSE_SECONDS; optionally recorded.
+async function timelapse(record = false) {
+  if (state.run) {
+    const same = state.run.kind === 'timelapse';
+    stopPlayback();
+    if (same) return;
+    await frame();
+  }
+  const current = state.result;
+  if (!current) return;
+  const run = { kind: 'timelapse', record, cancelled: false, fromStart: true };
+  state.run = run;
+  setPlayButtons();
+  if (state.tab !== 'preview') setTab('preview');
+  const jobs = current.jobs && current.jobs.length > 1 ? current.jobs : [{ label: '' }];
+  const results = [];
+  try {
+    for (let k = 1; k <= jobs.length; k++) {
+      if (jobs.length > 1) showCaption(`Preparing cut ${k} of ${jobs.length}…`);
+      if (k === (current.job || 1)) { results.push(current); continue; }
+      const project = clone(state.project);
+      project.part.job = k;
+      results.push(await api('/api/slice', { project }));
+      if (run.cancelled) break;
+    }
+  } catch (err) {
+    showCaption('');
+    alert(err.message);
+    state.run = null;
+    setPlayButtons();
+    return;
+  }
+  const total = results.reduce((sum, r) => sum + r.path.t.at(-1), 0);
+  const rate = Math.max(1, total / TIMELAPSE_SECONDS);
+  const recorder = record && !run.cancelled ? startRecording() : null;
+  const name = state.project.title || { wing: 'Wing panel', shape: '2D shape', fuselage: 'Fuselage', nest: 'Block of parts' }[partType()];
+  for (let k = 0; k < results.length && !run.cancelled; k++) {
+    state.shown = results[k];
+    state.viewer.setResult(results[k]);
+    state.viewer.showCuts(true);
+    state.scrub.t = 0;
+    updateScrubber();
+    run.title = results.length > 1 ? `Cut ${k + 1} of ${results.length} · ${jobs[k].label}` : name;
+    showCaption(run.title);
+    if (!(await animate(results.length > 1 ? 1400 : 900, run, () => state.viewer.render()))) break;
+    if (!(await playCut(rate, run))) break;
+    if (!(await animate(600, run, () => state.viewer.render()))) break;
+  }
+  showCaption('');
+  if (recorder) await recorder.finish(`${slug(projectName())}-timelapse`);
+  if (state.result === current && state.shown === current && !run.cancelled) {
+    // One cut, played to the end: leave the pieces lifted out until the next move.
+    $('#scrub-time').textContent = `${clock(current.path.t.at(-1))} / ${clock(current.path.t.at(-1))}`;
+  } else if (state.result === current) {  // back to the cut that was showing
+    state.shown = current;
+    state.viewer.setResult(current);
+    state.viewer.showCuts(state.tab === 'preview');
+    state.scrub.t = Infinity;
+    updateScrubber();
+  } else {  // a new slice replaced it meanwhile
+    state.shown = state.result;
+    state.scrub.t = Infinity;
+    updateScrubber();
+  }
+  if (state.run === run) state.run = null;
+  setPlayButtons();
+}
+
+// Records the 3D view, with the caption and the clock drawn in, while the timelapse plays.
+function startRecording() {
+  const source = state.viewer.canvas;
+  const canvas = document.createElement('canvas');
+  canvas.width = source.width;
+  canvas.height = source.height;
+  const ctx = canvas.getContext('2d');
+  const scale = canvas.width / Math.max(1, source.clientWidth);
+  const draw = () => {
+    ctx.drawImage(source, 0, 0);
+    const pad = 14 * scale;
+    ctx.font = `600 ${15 * scale}px system-ui, sans-serif`;
+    ctx.textBaseline = 'middle';
+    const lines = [];
+    if (state.caption) lines.push(state.caption);
+    const r = state.shown;
+    if (r) lines.push(`${clock(Math.min(state.scrub.t, r.path.t.at(-1)))} / ${clock(r.path.t.at(-1))} of cutting`);
+    lines.forEach((text, i) => {
+      const w = Math.min(canvas.width - 2 * pad, ctx.measureText(text).width + 2 * pad);
+      const y = canvas.height - pad - (lines.length - i) * 30 * scale;
+      ctx.fillStyle = 'rgba(20, 24, 31, 0.72)';
+      ctx.fillRect(pad, y, w, 26 * scale);
+      ctx.fillStyle = '#ffffff';
+      ctx.fillText(text, 2 * pad, y + 13 * scale, canvas.width - 4 * pad);
+    });
+    ctx.font = `600 ${13 * scale}px system-ui, sans-serif`;
+    ctx.fillStyle = 'rgba(20, 24, 31, 0.6)';
+    ctx.fillText('open_HOWI', pad, pad + 8 * scale);
   };
-  requestAnimationFrame(step);
+  draw();
+  const type = ['video/mp4;codecs=avc1', 'video/mp4', 'video/webm;codecs=vp9', 'video/webm;codecs=vp8', 'video/webm']
+    .find((t) => MediaRecorder.isTypeSupported(t)) || '';
+  const stream = canvas.captureStream(30);
+  const recorder = new MediaRecorder(stream, type ? { mimeType: type, videoBitsPerSecond: 6e6 } : {});
+  const chunks = [];
+  recorder.ondataavailable = (e) => { if (e.data.size) chunks.push(e.data); };
+  state.viewer.onFrame = draw;
+  recorder.start(500);
+  return {
+    finish(base) {
+      return new Promise((ok) => {
+        recorder.onstop = () => {
+          state.viewer.onFrame = null;
+          const mime = recorder.mimeType || type || 'video/webm';
+          const blob = new Blob(chunks, { type: mime });
+          const a = el('a', { href: URL.createObjectURL(blob), download: `${base}.${mime.includes('mp4') ? 'mp4' : 'webm'}` });
+          document.body.append(a);
+          a.click();
+          setTimeout(() => { URL.revokeObjectURL(a.href); a.remove(); }, 2000);
+          ok();
+        };
+        draw();
+        recorder.stop();
+      });
+    },
+  };
 }
 
 // Tabs ----------------------------------------------------------------------------
@@ -859,7 +1066,7 @@ function setTab(tab) {
   state.tab = tab;
   for (const b of $$('.tabs button')) b.setAttribute('aria-selected', String(b.dataset.tab === tab));
   for (const p of $$('.panel')) p.hidden = p.dataset.panel !== tab;
-  if (state.scrub.playing && tab !== 'preview') togglePlay();
+  if (state.run && tab !== 'preview' && !state.run.record) stopPlayback();
   applyTabView();
   if (tab === 'device') pollDevice();
 }
@@ -867,6 +1074,7 @@ function setTab(tab) {
 function applyTabView() {
   updateScrubber();
   const r = state.result;
+  state.viewer.showCuts(state.tab === 'preview');
   if (state.tab === 'prepare' && r) {
     state.viewer.setProgress(r.path.t.length - 1, 1);
     state.viewer.setWire(r.path.xy[0], r.path.uv[0]);
@@ -1050,12 +1258,15 @@ function wire() {
   $('#project-title').addEventListener('input', (e) => { state.project.title = e.target.value; changed(); });
 
   $('#scrub').addEventListener('input', (e) => {
-    if (!state.result) return;
-    if (state.scrub.playing) togglePlay();
-    state.scrub.t = (Number(e.target.value) / 1000) * state.result.path.t.at(-1);
+    const r = state.shown || state.result;
+    if (!r) return;
+    if (state.run && state.run.kind === 'play') stopPlayback();
+    state.scrub.t = (Number(e.target.value) / 1000) * r.path.t.at(-1);
     updateScrubber();
   });
   $('#btn-play').addEventListener('click', togglePlay);
+  $('#btn-timelapse').addEventListener('click', () => timelapse(false));
+  $('#btn-video').addEventListener('click', () => (state.run && state.run.record ? stopPlayback() : timelapse(true)));
 
   $('#btn-export').addEventListener('click', () => {
     const r = state.result;
@@ -1085,6 +1296,13 @@ function wire() {
     } catch (err) { alert(`Could not open ${file.name}: ${err.message}`); }
   });
   $('#btn-kerf').addEventListener('click', kerfTest);
+  $('#btn-quit').hidden = !state.info.desktop;
+  $('#btn-quit').addEventListener('click', async () => {
+    if (!confirm('Quit open_HOWI? The machine is disconnected; unsaved changes stay in this browser.')) return;
+    try { await api('/api/app/quit', {}); } catch (err) { alert(err.message); return; }
+    document.body.replaceChildren(el('main', { class: 'quit-note' }, el('h1', {}, 'open_HOWI has stopped'),
+      el('p', {}, 'You can close this tab. Start it again from its shortcut.')));
+  });
   $('#sel-job').addEventListener('change', () => {
     state.project.part.job = Number($('#sel-job').value);
     changed();
@@ -1171,6 +1389,7 @@ async function init() {
   const previous = saved.get('openhowi.project');
   state.project = withDefaults(previous && previous.version === info.default_project.version ? previous : info.default_project);
   wire();
+  setPlayButtons();
   renderSettings();
   renderDevice();
   changed();

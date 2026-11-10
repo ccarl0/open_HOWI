@@ -156,6 +156,12 @@ input.invalid { border-color: var(--danger); }
 }
 .scrubber input[type="range"] { flex: 1; accent-color: var(--accent); }
 .scrubber select { width: auto; }
+.scrubber button:not(.icon) { white-space: nowrap; }
+.caption {
+  position: absolute; left: 50%; transform: translateX(-50%); bottom: 74px; max-width: min(720px, calc(100% - 32px));
+  padding: 8px 14px; border-radius: 8px; background: rgba(20, 24, 31, 0.78); color: #fff; font-weight: 600;
+  font-size: 14px; text-align: center; pointer-events: none;
+}
 .time { font-variant-numeric: tabular-nums; color: var(--muted); font-size: 12.5px; white-space: nowrap; }
 
 /* Sidebar ------------------------------------------------------------------------ */
@@ -333,3 +339,6 @@ dialog.wide { width: min(720px, calc(100vw - 32px)); }
 .step h3 { font-size: 13px; margin: 0 0 4px; }
 .step svg { width: 100%; height: auto; display: block; border: 1px solid var(--border); border-radius: 6px; }
 .step ul { margin: 6px 0 0; padding-left: 18px; font-size: 12.5px; display: flex; flex-direction: column; gap: 4px; }
+
+.quit-note { max-width: 520px; margin: 18vh auto; padding: 0 16px; text-align: center; }
+.quit-note h1 { font-size: 22px; margin-bottom: 8px; }

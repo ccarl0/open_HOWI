@@ -73,6 +73,8 @@ class App:
     def __init__(self, store: PresetStore | None = None, controller: MachineController | None = None):
         self.store = store or PresetStore()
         self.controller = controller or MachineController()
+        self.quit: Callable[[], None] | None = None
+        """Set when the app was started from a desktop shortcut: how the UI's Quit button stops it."""
         self.routes: dict[tuple[str, str], Callable[[dict[str, Any]], Any]] = {
             ("GET", "/api/info"): self.info,
             ("GET", "/api/presets"): self.presets,
@@ -106,6 +108,7 @@ class App:
             ("POST", "/api/device/pause"): lambda b: self.controller.pause(),
             ("POST", "/api/device/resume"): lambda b: self.controller.resume(),
             ("POST", "/api/device/stop"): lambda b: self.controller.stop(),
+            ("POST", "/api/app/quit"): self.quit_app,
         }
 
     def handle(self, method: str, path: str, payload: dict[str, Any]) -> Any:
@@ -120,9 +123,17 @@ class App:
 
     # Settings & slicing ----------------------------------------------------------
 
+    def quit_app(self, _: dict[str, Any]) -> None:
+        if self.quit is None:
+            raise ApiError("this app was started from the command line: stop it there (Ctrl-C)")
+        if self.controller.connected:
+            self.controller.disconnect()
+        self.quit()
+
     def info(self, _: dict[str, Any]) -> dict[str, Any]:
         return {
             "version": __version__,
+            "desktop": self.quit is not None,
             "schema": {
                 "machine": MACHINE_FIELDS,
                 "material": MATERIAL_FIELDS,
@@ -388,11 +399,16 @@ def serve(
     open_browser: bool = True,
     allow_hosts: tuple[str, ...] = (),
     app: App | None = None,
+    desktop: bool = False,
 ) -> None:
+    """Run the app until Ctrl-C (or, with ``desktop``, until the UI's Quit button)."""
     app = app or App()
     server = Server((host, port), app, allow_hosts)
+    if desktop:
+        app.quit = lambda: threading.Timer(0.3, server.shutdown).start()
     url = f"http://{'localhost' if host in ('127.0.0.1', '::1') else host}:{server.server_address[1]}/"
-    print(f"open_HOWI {__version__} running at {url}  (Ctrl-C to quit)")
+    how = "press Quit in the app or close this window to stop it" if desktop else "Ctrl-C to quit"
+    print(f"open_HOWI {__version__} running at {url}  ({how})")
     if server.lan:
         print("WARNING: listening on the network. Anyone who can reach this address can move the machine.")
     if open_browser:

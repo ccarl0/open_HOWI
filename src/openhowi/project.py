@@ -38,7 +38,7 @@ from .shapes import (
     shapes_toolpath,
     transform_regions,
 )
-from .toolpath import MachineLimitError, Placement, PlacementError, Toolpath, layout_wing, wing_toolpath
+from .toolpath import MachineLimitError, Placement, PlacementError, Stop, Toolpath, layout_wing, wing_toolpath
 from .wing import BayGeometry, WingPanel
 
 PROJECT_VERSION = 1
@@ -595,6 +595,10 @@ class _Part:
     """Illustrated steps for this cut: {"title", "notes", "svg"}."""
     ghost_label: str = ""
     jig: dict[str, float] | None = None
+    turn: dict[str, float] | None = None
+    """A block turned between passes: the axis (Y and Z, parallel to X) and the turn per pass (degrees)."""
+    roles: list[str] = field(default_factory=list)
+    """What each solid is ("part", or "surface" for a control surface), when it matters for display."""
     solid_z: list[tuple[float, float]] = field(default_factory=list)
     """Root and tip positions of each solid when they differ (nested parts); empty: all at z_root/z_tip."""
     skin_z: list[tuple[float, float]] = field(default_factory=list)
@@ -874,6 +878,7 @@ def combine_parts(
         out.root_regions += [move_region(r, dx, dy) for r in part.root_regions]
         out.tip_regions += [move_region(r, dx, dy) for r in part.tip_regions]
         out.solid_z += [(part.z_root, part.z_tip)] * len(part.root_regions)
+        out.roles += (part.roles + ["part"] * len(part.root_regions))[: len(part.root_regions)]
         out.skins += [(move(a, dx, dy), move(b, dx, dy)) for a, b in part.skins]
         out.skin_z += [(part.z_root, part.z_tip)] * len(part.skins)
         out.bays += [(z0, z1, move(a, dx, dy), move(b, dx, dy)) for z0, z1, a, b in part.bays]
@@ -1106,6 +1111,7 @@ def _wing_cut(part: dict[str, Any], machine: Machine, material: Material, placem
         z_tip=layout.z_tip,
         root_regions=[Region(ring, holes) for ring, holes in layout.root_pieces],
         tip_regions=[Region(ring, holes) for ring, holes in layout.tip_pieces],
+        roles=["part", "surface"][: len(layout.root_pieces)],
         kerf=kerf,
         ratio=ratio,
         comments=comments,
@@ -1469,7 +1475,19 @@ def _finish(
     xy_pts, uv_pts, cut = [list(toolpath.start[0])], [list(toolpath.start[1])], [False]
     cut_xy = cut_uv = 0.0
     peak = {"XY": 0.0, "UV": 0.0}
+    pending = list(toolpath.stops)
+    stops: list[dict[str, Any]] = []
+
+    def stop_here(stop: Stop) -> None:
+        """A pause for the operator (or a rotary turn) where the path now ends."""
+        entry: dict[str, Any] = {"i": len(times) - 1, "t": round(t, 3), "message": stop.message}
+        if stop.rotate is not None:
+            entry["angle"] = stop.rotate
+        stops.append(entry)
+
     for seg in segments(toolpath, machine):
+        while pending and seg.index >= pending[0].index:
+            stop_here(pending.pop(0))
         t += seg.minutes * 60.0
         times.append(round(t, 3))
         xy_pts.append([_r(seg.xy[0]), _r(seg.xy[1])])
@@ -1480,6 +1498,8 @@ def _finish(
             cut_uv += seg.d_uv
             peak["XY"] = max(peak["XY"], seg.d_xy / seg.minutes)
             peak["UV"] = max(peak["UV"], seg.d_uv / seg.minutes)
+    for stop in pending:
+        stop_here(stop)
 
     shown = all_points(built.root_regions) + all_points(built.tip_regions)
     _, sy0, sx1, sy1 = bounds(shown)
@@ -1534,6 +1554,7 @@ def _finish(
             "solids": [
                 {"root": region_json(r), "tip": region_json(tp)}
                 | ({"z_root": _r(built.solid_z[k][0]), "z_tip": _r(built.solid_z[k][1])} if built.solid_z else {})
+                | ({"role": built.roles[k]} if k < len(built.roles) and built.roles[k] != "part" else {})
                 for k, (r, tp) in enumerate(zip(built.root_regions, built.tip_regions))
             ],
             "skins": [
@@ -1565,7 +1586,8 @@ def _finish(
             for v in built.views
         ],
         "block": block,
-        "path": {"t": times, "xy": xy_pts, "uv": uv_pts, "cut": cut},
+        "path": {"t": times, "xy": xy_pts, "uv": uv_pts, "cut": cut, "stops": stops},
+        "turn": built.turn,
     }
     return SliceResult(machine, material, toolpath, gcode, data, built.wing, built.fuselage)
 
@@ -1745,6 +1767,7 @@ def _fuselage_part(part: dict[str, Any], machine: Machine, material: Material, p
         steps=cut.steps,
         ghost_label=cut.ghost_label,
         jig=cut.jig,
+        turn=cut.turn,
     )
 
 

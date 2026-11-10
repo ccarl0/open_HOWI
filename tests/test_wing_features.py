@@ -341,3 +341,33 @@ def test_api_and_schema():
         "POST", "/api/slice", {"project": nest_project(("W", copy.deepcopy(DEFAULT_PARTS["wing"]), {}))}
     )
     assert result["ok"] and result["kind"] == "nest" and point_in_polygon((0, 0), [(-1, -1), (1, -1), (0, 1)])
+
+
+# Timelapse data -----------------------------------------------------------------------------------------
+
+
+def test_slice_data_for_the_timelapse():
+    project = default_project()
+    project["part"]["controls"] = [{"name": "aileron", "position": 75}]
+    data = slice_project(project).data
+    assert [s.get("role") for s in data["part"]["solids"]] == [None, "surface"]
+    assert data["path"]["stops"] == [] and data["turn"] is None
+    fuselage = default_project()
+    fuselage["part"] = copy.deepcopy(DEFAULT_PARTS["fuselage"]) | {"method": "turned", "facets": 6}
+    fuselage["placement"] = copy.deepcopy(DEFAULT_PLACEMENTS["fuselage"])
+    data = slice_project(fuselage).data
+    stops, path = data["path"]["stops"], data["path"]
+    assert len(stops) == 5 and data["turn"]["step"] == 60
+    assert [s["i"] for s in stops] == sorted(s["i"] for s in stops)
+    for stop in stops:  # each pause sits where a pass ends, out of the foam, at its time on the timeline
+        assert path["t"][stop["i"]] == stop["t"] and not path["cut"][stop["i"] + 1]
+        assert "roll the block onto edge" in stop["message"]
+    ring = data["part"]["ghosts"][0][0]  # the turning axis runs through the fuselage
+    assert min(p[1] for p in ring) < data["turn"]["y"] < max(p[1] for p in ring)
+    fuselage["machine"]["rotary_axis"] = "A"
+    stops = slice_project(fuselage).data["path"]["stops"]
+    assert [s["angle"] for s in stops] == [60, 120, 180, 240, 300]
+    nested = default_project()
+    nested["part"].update(pair=True, controls=[{"name": "aileron", "position": 75}])
+    roles = [s.get("role") for s in slice_project(nested).data["part"]["solids"]]
+    assert roles == [None, "surface", None, "surface"]
