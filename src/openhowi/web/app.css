@@ -101,7 +101,8 @@ h2 { font-size: 13px; font-weight: 600; margin: 0 0 10px; display: flex; align-i
 .dot { width: 7px; height: 7px; border-radius: 50%; background: transparent; }
 .dot.on { background: var(--ok); }
 .dot.busy { background: var(--accent); }
-.top-actions { margin-left: auto; display: flex; gap: 4px; }
+.top-actions { margin-left: auto; display: flex; align-items: center; gap: 4px; }
+.app-version { padding: 0 6px; font-size: 12px; color: var(--muted); font-variant-numeric: tabular-nums; white-space: nowrap; }
 
 /* Buttons & inputs ----------------------------------------------------------- */
 button {

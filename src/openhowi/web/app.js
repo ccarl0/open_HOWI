@@ -1321,6 +1321,7 @@ function wire() {
     } catch (err) { alert(`Could not open ${file.name}: ${err.message}`); }
   });
   $('#btn-kerf').addEventListener('click', kerfTest);
+  $('#app-version').textContent = `v${state.info.version}`;
   $('#btn-quit').hidden = !state.info.desktop || state.info.window;  // the window has File → Quit
   const remote = state.info.remote;
   if (remote) {
