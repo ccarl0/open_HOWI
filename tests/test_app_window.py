@@ -102,6 +102,107 @@ def test_menu_and_focus(shell):
     assert "restore" in win.window.calls and win.window.on_top
 
 
+class Event:
+    def __init__(self):
+        self.handlers = []
+
+    def __iadd__(self, handler):
+        self.handlers.append(handler)
+        return self
+
+
+class OpenedWindow(FakeWindow):
+    """A window as webview.create_window returns it, with its events and a page that has loaded."""
+
+    def __init__(self):
+        super().__init__()
+        self.events = type("Events", (), {})()
+        for name in ("closing", "closed", "resized", "moved"):
+            setattr(self.events, name, Event())
+
+    def evaluate_js(self, script):
+        return "#summary b" in script
+
+
+@pytest.fixture
+def fake_webview(shell, monkeypatch):
+    """webview.create_window/start recorded instead of opening a window; start runs its function."""
+    _, webview = shell
+    seen = {}
+
+    def create_window(title, url, **kw):
+        seen.update(title=title, url=url, window=kw)
+        seen["opened"] = OpenedWindow()
+        return seen["opened"]
+
+    def start(func=None, **kw):
+        seen["start"] = kw
+        if func:
+            func()
+
+    monkeypatch.setattr(webview, "create_window", create_window)
+    monkeypatch.setattr(webview, "start", start)
+    monkeypatch.setattr(desktop, "_gui", lambda: "test")
+    return seen
+
+
+@pytest.mark.parametrize("platform", ["win32", "darwin", "linux"])
+def test_the_window_icon_is_one_the_system_can_read(shell, fake_webview, monkeypatch, platform):
+    win, _ = shell
+    monkeypatch.setattr(desktop.sys, "platform", platform)
+    win.run()
+    icon = fake_webview["start"]["icon"]
+    if platform == "win32":  # its icon loader takes only .ico (a PNG stops the window opening): the exe's icon
+        assert icon is None
+    else:
+        assert icon.endswith("icon-256.png")
+    assert fake_webview["window"]["menu"] and fake_webview["start"]["storage_path"].endswith("webview")
+    assert "?shell=" in fake_webview["url"]
+
+
+def test_the_self_test_opens_the_app_window_itself(shell, fake_webview, tmp_path, monkeypatch):
+    monkeypatch.setattr(desktop.sys, "platform", "win32")
+    report = tmp_path / "report.txt"
+    assert desktop.self_test(["window", "--report", str(report)]) == 0
+    assert "the app loaded in it" in report.read_text()
+    assert fake_webview["window"]["menu"] and fake_webview["window"]["js_api"]  # the real window, not a bare one
+    assert fake_webview["start"]["icon"] is None and "self-test" in fake_webview["start"]["storage_path"]
+    assert fake_webview["opened"].destroyed
+    assert not (tmp_path / "window.json").exists()  # it leaves the remembered size and place alone
+
+
+def test_without_a_console_it_keeps_a_log_and_says_what_went_wrong(tmp_path, monkeypatch):
+    monkeypatch.setattr(desktop, "_config_dir", lambda: tmp_path)
+    monkeypatch.setattr(desktop, "running_instance", lambda: False)
+
+    def broken():
+        raise RuntimeError("no luck")
+
+    monkeypatch.setattr(desktop, "run_app", broken)
+    alerts = []
+    monkeypatch.setattr(desktop, "_alert", alerts.append)
+    monkeypatch.setattr(desktop.sys, "stdout", None)  # the Windows build: no console
+    monkeypatch.setattr(desktop.sys, "stderr", None)
+    try:
+        assert desktop.main([]) == 1
+    finally:
+        desktop.sys.stdout.close()
+    log = tmp_path / "open_HOWI.log"
+    text = log.read_text()
+    assert text.startswith("open_HOWI ") and "RuntimeError: no luck" in text
+    assert alerts and "no luck" in alerts[0] and str(log) in alerts[0]
+
+
+def test_with_a_console_errors_are_not_hidden(tmp_path, monkeypatch):
+    monkeypatch.setattr(desktop, "_config_dir", lambda: tmp_path)
+    monkeypatch.setattr(desktop, "running_instance", lambda: False)
+    monkeypatch.setattr(desktop, "run_app", lambda: 1 / 0)
+    monkeypatch.setattr(desktop, "_alert", lambda text: pytest.fail("no message box with a console"))
+    with pytest.raises(ZeroDivisionError):
+        desktop.main([])
+    assert not (tmp_path / "open_HOWI.log").exists()
+
+
 def free_port():
     with socket.socket() as s:
         s.bind(("127.0.0.1", 0))

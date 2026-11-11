@@ -63,7 +63,8 @@ the window quits; if a cut is running, it asks first and stops it (the wire swit
 The window uses the web engine the system already has: Edge WebView2 on Windows (part of Windows 11
 and of current Windows 10), WebKit on a Mac. Where there is none, open_HOWI opens in the web browser
 instead, with a **Quit** button at the top right. Without 3D graphics (WebGL) everything but the 3D
-view still works.
+view still works. If it does not start on Windows, it says why, and the details are in
+`%APPDATA%\openhowi\open_HOWI.log` (attach that file when you report the problem).
 
 **With Python 3.11 or newer** (Intel Macs, or any other system):
 

@@ -91,6 +91,15 @@ jobs:
           Compress-Archive -Path dist\open_HOWI -DestinationPath dist\open_HOWI-${{ steps.version.outputs.version }}-windows-portable.zip
           New-Item -ItemType Directory -Force out | Out-Null
           Move-Item dist\open_HOWI-*-windows-*.* out\
+      - name: Install it as a user would and open the app window from there
+        if: runner.os == 'Windows'
+        shell: pwsh
+        run: |
+          $dir = Join-Path $env:RUNNER_TEMP "open HOWI installed"
+          $setup = (Get-Item out\open_HOWI-*-windows-setup.exe).FullName
+          $p = Start-Process $setup -Wait -PassThru -ArgumentList "/VERYSILENT", "/SUPPRESSMSGBOXES", "/NORESTART", "/CURRENTUSER", "/DIR=`"$dir`""
+          if ($p.ExitCode -ne 0) { throw "the installer failed ($($p.ExitCode))" }
+          python packaging/smoke_test.py "$dir" --window
       - name: macOS disk image
         if: runner.os == 'macOS'
         run: |
