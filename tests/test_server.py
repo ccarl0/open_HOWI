@@ -128,8 +128,9 @@ def test_http_same_origin_write(server):
 
 def test_part_types_and_shape_inspect(app):
     info = app.handle("GET", "/api/info", {})
-    assert [t["type"] for t in info["part_types"]] == ["wing", "shape", "fuselage", "nest"]
-    assert {"wing", "shape", "fuselage", "nest"} == set(info["schema"]["part"]) == set(info["default_parts"])
+    assert [t["type"] for t in info["part_types"]] == ["wing", "shape", "fuselage", "model", "nest"]
+    kinds = {"wing", "shape", "fuselage", "model", "nest"}
+    assert kinds == set(info["schema"]["part"]) == set(info["default_parts"]) == set(info["default_placements"])
     svg = '<svg xmlns="http://www.w3.org/2000/svg" width="10mm" height="10mm" viewBox="0 0 10 10"><rect width="10" height="10"/></svg>'
     r = app.handle("POST", "/api/shapes/inspect", {"filename": "sq.svg", "data": svg})
     assert r["shapes"] == 1 and r["size"] == [10, 10]
@@ -139,6 +140,19 @@ def test_part_types_and_shape_inspect(app):
             "/api/shapes/inspect",
             {"filename": "empty.svg", "data": '<svg xmlns="http://www.w3.org/2000/svg"/>'},
         )
+
+
+def test_model_inspect(app):
+    import base64
+
+    from openhowi.fuselage import stl_binary
+
+    tri = ((0.0, 0.0, 0.0), (10.0, 0.0, 0.0), (0.0, 20.0, 5.0))
+    data = base64.b64encode(stl_binary([tri, (tri[0], tri[2], tri[1])])).decode()
+    r = app.handle("POST", "/api/model/inspect", {"filename": "t.stl", "data": data})
+    assert r == {"name": "t.stl", "format": "stl", "triangles": 2, "size": [10, 20, 5]}
+    with pytest.raises(ApiError, match="not an STL"):
+        app.handle("POST", "/api/model/inspect", {"filename": "x.stl", "data": base64.b64encode(b"x" * 100).decode()})
 
 
 def test_airfoil_database_endpoints(app):

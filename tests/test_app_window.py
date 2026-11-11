@@ -70,6 +70,16 @@ def test_native_file_dialogs(shell, tmp_path):
     assert (tmp_path / "f.stl").read_bytes() == b"solid"
 
 
+def test_a_3d_model_is_read_as_bytes(shell, tmp_path):
+    win, _ = shell
+    stl = tmp_path / "part.stl"
+    stl.write_bytes(bytes(range(256)) * 4)  # binary: not text
+    win.window.answers = [[str(stl)]]
+    got = desktop.WindowApi(win).open_file("model")
+    assert got == {"name": "part.stl", "data": base64.b64encode(stl.read_bytes()).decode()}
+    assert "*.stl" in win.window.calls[0][1]["file_types"][0]
+
+
 @pytest.mark.parametrize("kind", sorted(desktop.FILE_TYPES))
 def test_every_file_filter_is_one_pywebview_accepts(kind):
     util = pytest.importorskip("webview.util")

@@ -429,7 +429,14 @@ def layout_shapes(
     tip_offset: Point = (0.0, 0.0),
     root_kerf: float = 0.0,
     tip_kerf: float = 0.0,
+    tip_regions: list[Region] | None = None,
 ) -> ShapeLayout:
+    """Lay out shapes cut through the foam between the root and tip faces.
+
+    The tip outlines are the root ones scaled by ``tip_scale`` and shifted by ``tip_offset``, or
+    ``tip_regions`` when given: those must have the same shapes, holes and point counts as
+    ``regions``, point for point, since the wire joins matching points.
+    """
     if not regions:
         raise ShapeError("the drawing has no closed outlines to cut")
     if tip_scale <= 0:
@@ -446,8 +453,13 @@ def layout_shapes(
                 f"carriage the outline would shrink to nothing. Make the part longer, reduce the taper, or move "
                 f"the part closer to the {side} carriage."
             )
-    x0, y0, x1, y1 = bounds(all_points(regions))
-    tip_regions = scale_about(regions, tip_scale, ((x0 + x1) / 2, (y0 + y1) / 2), tip_offset)
+    if tip_regions is None:
+        x0, y0, x1, y1 = bounds(all_points(regions))
+        tip_regions = scale_about(regions, tip_scale, ((x0 + x1) / 2, (y0 + y1) / 2), tip_offset)
+    elif [[len(ring) for ring in r.rings()] for r in regions] != [
+        [len(ring) for ring in t.rings()] for t in tip_regions
+    ]:
+        raise ShapeError("the tip outlines must match the root outlines point for point")
     warnings: list[str] = []
 
     # Kerf: move every ring away from the material (to its right; outlines CCW, holes CW).

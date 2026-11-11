@@ -339,6 +339,38 @@ turn the foam for each one):
 `examples/sport_fuselage.howi.json` is a ready-made fuselage with a wing saddle, and
 `examples/fuselage/side.svg` / `top.svg` are the same fuselage as drawings.
 
+### 3D models (STL)
+
+Switch the part to **3D model (STL)** and load an STL file (binary or text, in millimetres) from any
+CAD or 3D program. Tell the app which of the file's axes points **up** (most CAD programs: Z) and
+**turn** it a quarter turn at a time until its length runs along the machine's X axis; the Side, Top
+and Front views show how it lies, and *Scale* resizes it. The model is drawn faintly in the 3D view,
+in place for each cut.
+
+![A 3D model from an STL file, pass 1 of the two-view cut](docs/model.png)
+
+Two ways to cut it:
+
+- **Two views** (two passes). Pass 1 cuts the model's side outline right through the block; keep the
+  offcuts and tape them back in place, turn the block a quarter turn about its length (as the steps
+  say) and pass 2 cuts the outline seen from above. What is left is the model as both views see it:
+  round it off with a sanding block. Quick, for anything whose shape is mostly in its side and top
+  views (fuselages, figures, letters, simple objects).
+- **Slabs.** The model is sliced across the wire into slabs as thick as your foam sheets, and each
+  slab is cut on its own as a ruled surface between the model's outlines at its two faces, then the
+  slabs are glued back together. Cut every slab from a sheet of the same size, placed the same way:
+  the offcut frames then line up, and stacked they make a jig to glue the slabs in register. Slabs
+  are cut midway between the carriages, where the wire can tilt the most; still, a slab is thin
+  compared with the distance between the carriages, so where the model changes faster than the wire
+  can follow the slab is tapered as far as the machine reaches (starting from the face the other one
+  fits inside, so the cut stays outside the model) and the app says how far, to sand the rest.
+  Thicker slabs taper more. Holes through the model are cut through a slit; outlines that split or
+  join between a slab's faces are cut straight.
+
+The outlines are traced on a fine grid (*Outline detail*, about 1/600 of the model's length), which
+copes with the untidy meshes many STL files have; if the model has gaps the app says so.
+`examples/fuselage.stl` is a model to try (Z up).
+
 **Run it on a Raspberry Pi** at the machine and use it from other computers on your network: see
 [On a Raspberry Pi next to the machine](#on-a-raspberry-pi-next-to-the-machine).
 
@@ -429,6 +461,7 @@ openhowi naca 2412 -o naca2412.dat                   # write a NACA 4-digit airf
 - Homing/limit-aware placement and a block-size optimiser
 - Fuselages: sections from drawn formers (lofts between two different drawings), fin slots and hatch lines
 - Continuous rotary (lathe-style) cutting for bodies of revolution such as spinners
+- 3D models: turned cuts (the silhouette from every side, on a jig or rotary axis), and slabs laid along the wire
 - Signed installers (Windows code signing, Apple notarisation) and an Intel Mac build
 
 ## Development
@@ -445,6 +478,7 @@ ruff check src tests && ruff format --check src tests
 | `planform`, `nest` | Wing planforms and splitting curved ones into straight panels; nesting several parts in one block |
 | `svgimport`, `dxfimport`, `curves`, `shapes` | Drawing import, curve flattening, outlines/holes, kerf and cut planning for 2D shapes |
 | `fuselage`, `fusecut` | Fuselage stations/views, rounded sections, saddles, STL; two-view, turned and lengthwise cuts |
+| `mesh`, `modelcut` | 3D models: STL reading and turning, silhouettes and sections traced on a grid; two-view and slab cuts |
 | `diagrams`, `guide` | Step drawings (how the foam sits and turns) and the printable cutting guide |
 | `toolpath`, `gcode` | Placement, the 4-axis projection, feed timing and G-code output |
 | `material`, `presets`, `project`, `calibration`, `template` | Slicer layer: presets, kerf model, project slicing, kerf test, servo bay template and fuselage plans |

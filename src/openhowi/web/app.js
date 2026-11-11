@@ -87,19 +87,27 @@ function pickFile(input, kind) {
     input.value = '';
     input.onchange = async () => {
       const file = input.files[0];
-      resolve(file ? { name: file.name, text: await file.text() } : null);
+      if (!file) { resolve(null); return; }
+      // A 3D model (STL) is binary: it travels as base64 (``data``), text files as ``text``
+      resolve(kind === 'model' ? { name: file.name, data: toBase64(await file.arrayBuffer()) } : { name: file.name, text: await file.text() });
     };
     input.click();
   });
 }
+function toBase64(buffer) {
+  const bytes = new Uint8Array(buffer);
+  let out = '';
+  for (let i = 0; i < bytes.length; i += 0x8000) out += String.fromCharCode(...bytes.subarray(i, i + 0x8000));
+  return btoa(out);
+}
 const slug = (s) => (s || 'part').toLowerCase().replace(/[^a-z0-9]+/g, '-').replace(/^-|-$/g, '') || 'part';
-const projectName = () => state.project.title || { wing: 'wing-panel', shape: 'shape', fuselage: 'fuselage', nest: 'block' }[partType()] || 'part';
+const projectName = () => state.project.title || { wing: 'wing-panel', shape: 'shape', fuselage: 'fuselage', model: 'model', nest: 'block' }[partType()] || 'part';
 // A field shown only when another field has one of the given values (a value or a list of them)
 const matches = (want, have) => (Array.isArray(want) ? want.includes(have) : want === have);
 
 const state = {
   info: null, presets: { machine: [], material: [] }, airfoils: { naca: [], library: [], database: [] }, foilDb: null,
-  project: null, result: null, sliceSeq: 0, sliceTimer: null, tab: 'prepare', stash: {}, drawingInfo: null, viewInfo: {},
+  project: null, result: null, sliceSeq: 0, sliceTimer: null, tab: 'prepare', stash: {}, drawingInfo: null, viewInfo: {}, modelInfo: null,
   device: { connected: false, status: { state: 'Disconnected' }, job: null, lastLog: 0, polling: false },
   scrub: { t: Infinity }, run: null, shown: null, caption: '',
 };
@@ -376,6 +384,37 @@ function drawingField(f, value, set) {
   return el('div', { class: 'field drawing', title: f.help }, box);
 }
 
+// A 3D model (STL) for the "3D model" part
+function modelSummary(info) {
+  if (!info) return '';
+  return `${info.triangles.toLocaleString()} triangles · ${info.size.map((v) => num(v, 0)).join(' × ')} mm`;
+}
+
+function modelField(f, value, set) {
+  const s = state.result?.stats?.model;
+  const info = value && state.modelInfo?.name === value.name ? state.modelInfo
+    : (s && value && s.name === value.name ? { triangles: s.triangles, size: s.size } : null);
+  const box = el('div', { class: `drawing-box${value ? '' : ' empty'}` },
+    el('div', { class: 'name' }, value ? value.name : 'No model loaded'),
+    el('div', { class: 'meta' }, value ? modelSummary(info) : 'STL file, binary or text, in millimetres'));
+  const button = el('button', { type: 'button', class: value ? '' : 'primary' }, value ? 'Replace…' : 'Load STL…');
+  button.addEventListener('click', async () => {
+    const file = await pickFile($('#file-model'), 'model');
+    if (!file) return;
+    try {
+      state.modelInfo = await api('/api/model/inspect', { filename: file.name, data: file.data });
+    } catch (err) {
+      alert(`Could not load ${file.name}: ${err.message}`);
+      return;
+    }
+    if (!state.project.title) state.project.title = file.name.replace(/\.[^.]+$/, '');
+    set({ name: file.name, format: 'stl', data: file.data });
+    renderSettings();
+  });
+  box.append(button);
+  return el('div', { class: 'field drawing', title: f.help }, box);
+}
+
 // A part to nest in a block: taken from this session (the wing or shape set up before switching
 // to the block) or from a saved project file.
 function partSummary(src) {
@@ -522,6 +561,8 @@ function fieldEl(f, value, set, showHelp) {
     input = airfoilInput(id, f, value, set);
   } else if (f.type === 'drawing') {
     return drawingField(f, value, set);
+  } else if (f.type === 'model') {
+    return modelField(f, value, set);
   } else if (f.type === 'bool') {
     input = el('input', { id, type: 'checkbox' });
     input.checked = Boolean(value);
@@ -765,6 +806,10 @@ function renderResult() {
       ['Fuselage', `${num(s.fuselage.length, 0)} × ${num(s.fuselage.width, 0)} × ${num(s.fuselage.height, 0)} mm · ${num(s.fuselage.volume_l, 2)} l`],
       ['This cut', `${r.job} of ${r.jobs.length}: ${s.fuselage.cut}`],
     ] : []),
+    ...(s.model ? [
+      ['Model', `${s.model.size.map((v) => num(v, 0)).join(' × ')} mm · ${num(s.model.volume_l, 2)} l · ${s.model.triangles.toLocaleString()} triangles`],
+      ['This cut', `${r.job} of ${r.jobs.length}: ${s.model.cut}`],
+    ] : []),
     ['Peak carriage speed', `${num(s.peak_speed.XY, 0)} · ${num(s.peak_speed.UV, 0)} mm/min`],
     [`${xy} range`, `X ${num(s.extents.XY[2], 0)} · Y ${num(s.extents.XY[3], 0)} mm`],
     [`${uv} range`, `X ${num(s.extents.UV[2], 0)} · Y ${num(s.extents.UV[3], 0)} mm`],
@@ -775,7 +820,7 @@ function renderResult() {
   const hasBays = (r.part.bays || []).length > 0;
   $('#bay-row').hidden = !hasBays;
   $('#legend-bay').hidden = !hasBays;
-  $('#legend-ghost').hidden = !(r.part.ghosts || []).length;
+  $('#legend-ghost').hidden = !(r.part.ghosts || []).length && !r.part.mesh;
   $('#legend-ghost-text').textContent = r.part.ghost_label || 'Finished shape';
   renderJobs(r);
 

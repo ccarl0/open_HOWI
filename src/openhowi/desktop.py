@@ -32,6 +32,7 @@ FILE_TYPES: dict[str, tuple[str, ...]] = {
     "project": ("open_HOWI project (*.howi.json;*.json)", "All files (*.*)"),
     "airfoil": ("Airfoil (*.dat;*.txt)", "All files (*.*)"),
     "drawing": ("Drawing (*.svg;*.dxf)", "All files (*.*)"),
+    "model": ("3D model (*.stl)", "All files (*.*)"),
     ".gcode": ("G code (*.gcode;*.nc)", "All files (*.*)"),
     ".json": ("open_HOWI project (*.howi.json;*.json)",),
     ".svg": ("SVG drawing (*.svg)",),
@@ -41,6 +42,8 @@ FILE_TYPES: dict[str, tuple[str, ...]] = {
     ".webm": ("Video (*.webm)",),
     ".mp4": ("Video (*.mp4)",),
 }
+BINARY_KINDS = frozenset({"model"})
+"""Files the page gets as base64 rather than text."""
 
 
 def _opener() -> urllib.request.OpenerDirector:
@@ -82,7 +85,8 @@ class WindowApi:
         self._shell = shell
 
     def open_file(self, kind: str = "") -> dict[str, str] | None:
-        """Ask for a file to open; returns its name and text, or None when cancelled."""
+        """Ask for a file to open; returns its name and text (``data``, base64, for a binary 3D model),
+        or None when cancelled."""
         import webview
 
         paths = self._shell.window.create_file_dialog(
@@ -91,6 +95,8 @@ class WindowApi:
         if not paths:
             return None
         path = Path(paths[0] if not isinstance(paths, str) else paths)
+        if kind in BINARY_KINDS:
+            return {"name": path.name, "data": base64.b64encode(path.read_bytes()).decode("ascii")}
         return {"name": path.name, "text": path.read_text(encoding="utf-8", errors="replace")}
 
     def save_file(self, name: str, data: str, binary: bool = False) -> str | None:

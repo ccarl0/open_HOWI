@@ -38,10 +38,24 @@ jobs:
         with:
           python-version: "3.12"
       - name: Linux libraries for the app window (Qt WebEngine) and a virtual screen to test it on
+        id: libs
         if: runner.os == 'Linux'
+        # Without them the app still builds; only its window test is skipped (see "Check the app works").
+        continue-on-error: true
+        # A stalled package mirror otherwise holds the job for hours: give up and say so instead.
+        timeout-minutes: 10
+        env:
+          DEBIAN_FRONTEND: noninteractive
         run: |
-          sudo apt-get update -qq
-          sudo apt-get install -y -qq xvfb libegl1 libgl1 libnss3 libxkbcommon0 libxkbcommon-x11-0 libxcomposite1 \
+          # GitHub's own Ubuntu mirror (azure.archive.ubuntu.com) sometimes stops resolving: use the main archive.
+          if [ -f /etc/apt/apt-mirrors.txt ]; then
+            echo "http://archive.ubuntu.com/ubuntu/" | sudo tee /etc/apt/apt-mirrors.txt > /dev/null
+          fi
+          sudo sed -i 's|http://azure.archive.ubuntu.com/ubuntu|http://archive.ubuntu.com/ubuntu|g' \
+            /etc/apt/sources.list /etc/apt/sources.list.d/* 2>/dev/null || true
+          apt="-o Acquire::Retries=3 -o Acquire::http::Timeout=30 -o Acquire::https::Timeout=30"
+          sudo -E apt-get $apt update -qq
+          sudo -E apt-get $apt install -y -qq xvfb libegl1 libgl1 libnss3 libxkbcommon0 libxkbcommon-x11-0 libxcomposite1 \
             libxdamage1 libxrandr2 libgbm1 libxcb-cursor0 libxcb-icccm4 libxcb-image0 libxcb-keysyms1 libxcb-randr0 \
             libxcb-render-util0 libxcb-shape0 libxcb-xinerama0 libxcb-xkb1 libxtst6 libxshmfence1 libdbus-1-3 \
             libfontconfig1 libxkbfile1
@@ -69,8 +83,11 @@ jobs:
         shell: bash
         run: |
           if [ "$RUNNER_OS" = "macOS" ]; then folder=dist/open_HOWI.app/Contents/MacOS; else folder=dist/open_HOWI; fi
-          if [ "$RUNNER_OS" = "Linux" ]; then
+          if [ "$RUNNER_OS" = "Linux" ] && [ "${{ steps.libs.outcome }}" = "success" ]; then
             xvfb-run -a -s "-screen 0 1600x1000x24" python packaging/smoke_test.py "$folder" --window
+          elif [ "$RUNNER_OS" = "Linux" ]; then
+            echo "::warning::The Ubuntu packages could not be installed, so the Linux app window was not tested"
+            python packaging/smoke_test.py "$folder"
           else
             python packaging/smoke_test.py "$folder"
           fi
@@ -154,7 +171,8 @@ jobs:
 
   release:
     name: publish the release
-    if: startsWith(github.ref, 'refs/tags/v')
+    # Publish what did build: one failed system's files can be added later by re-running its job.
+    if: always() && startsWith(github.ref, 'refs/tags/v') && needs.python.result == 'success' && needs.app.result != 'cancelled'
     needs: [app, python]
     runs-on: ubuntu-latest
     permissions:
@@ -169,6 +187,9 @@ jobs:
           GH_TOKEN: ${{ github.token }}
         run: |
           ls -la out
+          for want in windows-setup.exe windows-portable.zip macos-arm64.dmg linux-x86_64.tar.gz; do
+            ls out/*-"$want" > /dev/null 2>&1 || echo "::warning::No *-$want in this release yet: re-run the failed job to add it"
+          done
           cat > notes.md <<'EOF'
           ## Download
 
