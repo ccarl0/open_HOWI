@@ -47,11 +47,50 @@ function fmtTime(s) {
 const clock = (s) => `${Math.floor(s / 60)}:${String(Math.floor(s % 60)).padStart(2, '0')}`;
 const num = (v, d = 1) => Number(v).toFixed(d);
 
+// In the app's own window the system's file dialogs are used; in a browser, downloads and file inputs.
+const native = () => Boolean(window.pywebview && window.pywebview.api);
+
 function download(name, text, type = 'text/plain') {
+  if (native()) {
+    window.pywebview.api.save_file(name, text, false).catch((err) => alert(`Could not save ${name}: ${err.message || err}`));
+    return;
+  }
   const url = URL.createObjectURL(new Blob([text], { type }));
   const a = el('a', { href: url, download: name });
   document.body.append(a); a.click(); a.remove();
   setTimeout(() => URL.revokeObjectURL(url), 1000);
+}
+
+// Binary files (3D model, video): `data` is base64 or a Blob.
+async function downloadBinary(name, data, type) {
+  if (native()) {
+    const b64 = typeof data === 'string' ? data : await new Promise((ok, fail) => {
+      const reader = new FileReader();
+      reader.onload = () => ok(String(reader.result).split(',', 2)[1]);
+      reader.onerror = () => fail(reader.error);
+      reader.readAsDataURL(data);
+    });
+    await window.pywebview.api.save_file(name, b64, true);
+    return;
+  }
+  const blob = typeof data === 'string' ? new Blob([Uint8Array.from(atob(data), (c) => c.charCodeAt(0))], { type }) : data;
+  const url = URL.createObjectURL(blob);
+  const a = el('a', { href: url, download: name });
+  document.body.append(a); a.click(); a.remove();
+  setTimeout(() => URL.revokeObjectURL(url), 2000);
+}
+
+// A text file chosen by the user: {name, text}, or null when cancelled.
+function pickFile(input, kind) {
+  if (native()) return window.pywebview.api.open_file(kind);
+  return new Promise((resolve) => {
+    input.value = '';
+    input.onchange = async () => {
+      const file = input.files[0];
+      resolve(file ? { name: file.name, text: await file.text() } : null);
+    };
+    input.click();
+  });
 }
 const slug = (s) => (s || 'part').toLowerCase().replace(/[^a-z0-9]+/g, '-').replace(/^-|-$/g, '') || 'part';
 const projectName = () => state.project.title || { wing: 'wing-panel', shape: 'shape', fuselage: 'fuselage', nest: 'block' }[partType()] || 'part';
@@ -292,13 +331,10 @@ async function browseAirfoils(current) {
 
 function pickAirfoilFile() {
   return new Promise((resolve) => {
-    const input = $('#file-airfoil');
-    input.value = '';
-    input.onchange = async () => {
-      const file = input.files[0];
+    pickFile($('#file-airfoil'), 'airfoil').then(async (file) => {
       if (!file) { resolve(null); return; }
       try {
-        const dat = await file.text();
+        const dat = file.text;
         const r = await api('/api/airfoils', { filename: file.name, dat });
         state.airfoils.library = r.library;
         resolve({ name: r.added.name, dat });
@@ -306,8 +342,7 @@ function pickAirfoilFile() {
         alert(`Could not load ${file.name}: ${err.message}`);
         resolve(null);
       }
-    };
-    input.click();
+    });
   });
 }
 
@@ -368,21 +403,18 @@ function partField(f, value, set) {
     row.append(b);
   }
   const load = el('button', { type: 'button' }, 'Load project…');
-  load.addEventListener('click', () => {
-    const input = el('input', { type: 'file', accept: '.json,application/json' });
-    input.addEventListener('change', async () => {
-      const file = input.files[0];
-      if (!file) return;
+  load.addEventListener('click', async () => {
+    const file = await pickFile(el('input', { type: 'file', accept: '.json,application/json' }), 'project');
+    if (file) {
       try {
-        const project = JSON.parse(await file.text());
+        const project = JSON.parse(file.text);
         const type = project?.part?.type || 'wing';
         if (!['wing', 'shape'].includes(type)) throw new Error('only wing panels and 2D shapes can be nested');
         const part = { ...clone(state.info.default_parts[type]), ...upgradePart(project.part) };
         set({ title: project.title || file.name.replace(/\.howi\.json$|\.json$/, ''), part });
         renderPartForm();
       } catch (err) { alert(`Could not load ${file.name}: ${err.message}`); }
-    });
-    input.click();
+    }
   });
   row.append(load);
   box.append(row);
@@ -422,13 +454,10 @@ function tableField(f, value, set) {
 
 function pickDrawingFile() {
   return new Promise((resolve) => {
-    const input = $('#file-drawing');
-    input.value = '';
-    input.onchange = async () => {
-      const file = input.files[0];
+    pickFile($('#file-drawing'), 'drawing').then(async (file) => {
       if (!file) { resolve(null); return; }
       try {
-        const data = await file.text();
+        const data = file.text;
         const info = await api('/api/shapes/inspect', { filename: file.name, data });
         state.drawingInfo = info;
         resolve({ name: file.name, format: info.format, data });
@@ -436,8 +465,7 @@ function pickDrawingFile() {
         alert(`Could not load ${file.name}: ${err.message}`);
         resolve(null);
       }
-    };
-    input.click();
+    });
   });
 }
 
@@ -860,7 +888,8 @@ function setPlayButtons() {
   $('#btn-timelapse').textContent = run && run.kind === 'timelapse' && !run.record ? 'Stop' : 'Timelapse';
   $('#btn-video').textContent = run && run.record ? 'Stop recording' : 'Save video';
   $('#btn-timelapse').disabled = Boolean(run && run.record);
-  $('#btn-video').disabled = Boolean(run && run.kind === 'timelapse' && !run.record) || !window.MediaRecorder;
+  $('#btn-video').disabled = Boolean(run && run.kind === 'timelapse' && !run.record) || !window.MediaRecorder
+    || Boolean(state.viewer && state.viewer.noGl);
 }
 
 function stopPlayback() {
@@ -1047,11 +1076,9 @@ function startRecording() {
           state.viewer.onFrame = null;
           const mime = recorder.mimeType || type || 'video/webm';
           const blob = new Blob(chunks, { type: mime });
-          const a = el('a', { href: URL.createObjectURL(blob), download: `${base}.${mime.includes('mp4') ? 'mp4' : 'webm'}` });
-          document.body.append(a);
-          a.click();
-          setTimeout(() => { URL.revokeObjectURL(a.href); a.remove(); }, 2000);
-          ok();
+          downloadBinary(`${base}.${mime.includes('mp4') ? 'mp4' : 'webm'}`, blob, mime)
+            .catch((err) => alert(`Could not save the video: ${err.message || err}`))
+            .finally(ok);
         };
         draw();
         recorder.stop();
@@ -1282,13 +1309,11 @@ function wire() {
   $('#btn-save').addEventListener('click', () => {
     download(`${slug(projectName())}.howi.json`, JSON.stringify(state.project, null, 2), 'application/json');
   });
-  $('#btn-open').addEventListener('click', () => $('#file-project').click());
-  $('#file-project').addEventListener('change', async (e) => {
-    const file = e.target.files[0];
-    e.target.value = '';
+  $('#btn-open').addEventListener('click', async () => {
+    const file = await pickFile($('#file-project'), 'project');
     if (!file) return;
     try {
-      const project = JSON.parse(await file.text());
+      const project = JSON.parse(file.text);
       if (!project || typeof project !== 'object' || project.version !== state.info.default_project.version) {
         throw new Error('not an open_HOWI project file');
       }
@@ -1296,7 +1321,14 @@ function wire() {
     } catch (err) { alert(`Could not open ${file.name}: ${err.message}`); }
   });
   $('#btn-kerf').addEventListener('click', kerfTest);
-  $('#btn-quit').hidden = !state.info.desktop;
+  $('#btn-quit').hidden = !state.info.desktop || state.info.window;  // the window has File → Quit
+  const remote = state.info.remote;
+  if (remote) {
+    $('#remote-note').hidden = false;
+    $('#remote-note').replaceChildren('Reachable from other computers at ',
+      ...remote.addresses.flatMap((u, i) => [i ? ' · ' : '', el('b', {}, u.replace(/\/$/, ''))]),
+      remote.password ? ' (they are asked for the password).' : '. No password is set: anyone on this network can use the machine.');
+  }
   $('#btn-quit').addEventListener('click', async () => {
     if (!confirm('Quit open_HOWI? The machine is disconnected; unsaved changes stay in this browser.')) return;
     try { await api('/api/app/quit', {}); } catch (err) { alert(err.message); return; }
@@ -1309,6 +1341,13 @@ function wire() {
   });
   $('#btn-export-all').addEventListener('click', exportAllCuts);
   $('#btn-guide').addEventListener('click', async () => {
+    if (native()) {  // in the app window: show it in the web browser, where it prints best
+      try {
+        const r = await api('/api/guide/fuselage', { project: state.project });
+        await window.pywebview.api.open_page(r.filename.replace(/[^\w.-]+/g, '-'), r.html);
+      } catch (err) { alert(err.message || err); }
+      return;
+    }
     const tab = window.open('', '_blank');  // open now, while the click still counts as the user's
     try {
       const r = await api('/api/guide/fuselage', { project: state.project });
@@ -1324,11 +1363,7 @@ function wire() {
   $('#btn-stl').addEventListener('click', async () => {
     try {
       const r = await api('/api/export/fuselage-stl', { project: state.project });
-      const bytes = Uint8Array.from(atob(r.stl), (c) => c.charCodeAt(0));
-      const url = URL.createObjectURL(new Blob([bytes], { type: 'model/stl' }));
-      const a = el('a', { href: url, download: r.filename.replace(/[^\w.-]+/g, '-') });
-      document.body.append(a); a.click(); a.remove();
-      setTimeout(() => URL.revokeObjectURL(url), 1000);
+      await downloadBinary(r.filename.replace(/[^\w.-]+/g, '-'), r.stl, 'model/stl');
     } catch (err) {
       alert(err.message);
     }
@@ -1382,13 +1417,61 @@ function wire() {
   });
 }
 
+// Menu of the app window (and keyboard shortcuts): actions on the page.
+function menuAction(action) {
+  const click = (sel) => { const b = $(sel); if (b && !b.disabled && !b.hidden) b.click(); };
+  if (action.startsWith('tab:')) { setTab(action.slice(4)); return; }
+  if (action.startsWith('view:')) { state.viewer.view(action.slice(5)); return; }
+  const buttons = { new: '#btn-new', open: '#btn-open', save: '#btn-save', export: '#btn-export',
+    'export-all': '#btn-export-all', kerf: '#btn-kerf' };
+  if (buttons[action]) { click(buttons[action]); return; }
+  if (action === 'timelapse') { timelapse(false); return; }
+  if (action === 'video') { timelapse(true); return; }
+  if (action === 'about') {
+    alert(`open_HOWI ${state.info.version}\nFree, open-source slicer and machine control for 4-axis hot-wire foam cutters.\nGPL-3.0-or-later · github.com/ccarl0/open_HOWI`);
+    return;
+  }
+  if (action === 'quit') {
+    if (native()) window.pywebview.api.quit(false); else click('#btn-quit');
+    return;
+  }
+  if (action === 'confirm-quit') {  // the window was closed while a cut runs
+    if (confirm('A cut is running. Stop it (the wire switches off) and quit?')) window.pywebview.api.quit(true);
+  }
+}
+window.openhowiMenu = menuAction;
+
+function shortcuts(e) {
+  if (!(e.ctrlKey || e.metaKey) || e.altKey) return;
+  const action = { n: 'new', o: 'open', s: 'save', e: 'export' }[e.key.toLowerCase()];
+  if (!action || e.shiftKey) return;
+  e.preventDefault();
+  menuAction(action);
+}
+
+// Without WebGL (very old graphics, or a remote desktop) everything but the 3D view still works.
+function noViewer(canvas, err) {
+  const note = el('div', { class: 'nogl' }, el('b', {}, 'No 3D preview on this computer'),
+    el('p', {}, 'Its graphics (WebGL) could not start. Slicing, the cut summary, G-code and machine control all work; '
+      + 'update the graphics driver, or open open_HOWI in another browser, to see the 3D view.'),
+    el('small', {}, String(err && err.message ? err.message : err)));
+  canvas.after(note);
+  canvas.hidden = true;
+  return new Proxy({ canvas, noGl: true }, { get: (target, key) => (key in target ? target[key] : () => {}) });
+}
+
 async function init() {
-  state.viewer = new Viewer($('#view'));
+  try {
+    state.viewer = new Viewer($('#view'));
+  } catch (err) {
+    state.viewer = noViewer($('#view'), err);
+  }
   const [info, presets, airfoils] = await Promise.all([api('/api/info'), api('/api/presets'), api('/api/airfoils')]);
   Object.assign(state, { info, presets, airfoils });
   const previous = saved.get('openhowi.project');
   state.project = withDefaults(previous && previous.version === info.default_project.version ? previous : info.default_project);
   wire();
+  document.addEventListener('keydown', shortcuts);
   setPlayButtons();
   renderSettings();
   renderDevice();

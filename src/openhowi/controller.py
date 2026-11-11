@@ -268,6 +268,11 @@ class MachineController:
     def _job_active(self) -> bool:
         return bool(self.job and self.job["state"] in ("running", "paused", "finishing"))
 
+    @property
+    def job_active(self) -> bool:
+        """A job is running, paused or finishing."""
+        return self._job_active()
+
     def _log_line(self, kind: str, text: str) -> None:
         self._log.append({"id": next(self._log_ids), "t": round(time.time(), 2), "kind": kind, "text": text})
 

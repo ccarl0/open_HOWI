@@ -53,17 +53,48 @@ Download the installer for your computer from the
 |---|---|---|
 | Windows 10/11 | `open_HOWI-…-windows-setup.exe` | Run it and follow the steps; start open_HOWI from the Start menu. Windows may warn about an unknown publisher: *More info → Run anyway*. (A portable `.zip` is there too.) |
 | Mac with Apple silicon | `open_HOWI-…-macos-arm64.dmg` | Open it and drag open_HOWI to Applications. The first time, right-click it and choose *Open*: the app is not signed by Apple. |
-| Linux (x86-64) | `open_HOWI-…-linux-x86_64.tar.gz` | Unpack it and run `./install.sh`. open_HOWI appears in your applications menu (`./install.sh --uninstall` removes it). |
+| Linux (x86-64) | `open_HOWI-…-linux-x86_64.tar.gz` | Unpack it and run `./install.sh`. open_HOWI appears in your applications menu (`./install.sh --uninstall` removes it). It carries its own web engine, hence the size. |
 
-open_HOWI opens in your web browser and runs only on your computer. Starting it again while it runs
-just opens it again. Stop it with **Quit** (top right) or by closing its window.
+open_HOWI opens in **its own window**, with a File / View / Help menu, the system's Open and Save
+dialogs and the usual shortcuts (Ctrl+N, Ctrl+O, Ctrl+S, Ctrl+E; ⌘ on a Mac). It runs only on your
+computer and works offline. Starting it again while it runs brings its window to the front. Closing
+the window quits; if a cut is running, it asks first and stops it (the wire switches off).
 
-**With Python 3.11 or newer** (Intel Macs, a Raspberry Pi next to the machine, or any other system):
+The window uses the web engine the system already has: Edge WebView2 on Windows (part of Windows 11
+and of current Windows 10), WebKit on a Mac. Where there is none, open_HOWI opens in the web browser
+instead, with a **Quit** button at the top right. Without 3D graphics (WebGL) everything but the 3D
+view still works.
+
+**With Python 3.11 or newer** (Intel Macs, or any other system):
 
 ```bash
 pipx install git+https://github.com/ccarl0/open_HOWI   # or: pip install open_howi-<version>-py3-none-any.whl
-open-howi            # starts the app in your browser (openhowi gui does the same, without Quit)
+open-howi            # the app in its own window (on Linux: pipx install "open-howi[window] @ git+…")
+openhowi gui         # the same app in your web browser, and the command line: openhowi --help
 ```
+
+### On a Raspberry Pi next to the machine
+
+The Pi runs open_HOWI and drives the cutter over USB; you use it from a laptop, tablet or phone on the
+same network, in the browser. Your computer need not stay on during a long cut. On the Pi (Raspberry
+Pi OS Bookworm or later, or any Debian-based Linux with systemd):
+
+```bash
+curl -fsSL https://raw.githubusercontent.com/ccarl0/open_HOWI/main/packaging/raspberry-pi/install.sh | bash
+```
+
+It installs open_HOWI, lets it use the USB port, asks for a password, and sets it to start whenever the
+Pi boots. At the end it shows the addresses to open, e.g. `http://raspberrypi.local:8765`; the app
+shows them too, in the Device tab. Options go after `bash -s --`:
+
+- `--password PASS` or `--no-password`: other computers are asked for the password (any user name);
+  the Pi itself never is. Without one, anyone on the network can move the machine and switch the wire
+  on: only do that on a network you trust.
+- `--kiosk`: also show open_HOWI full screen on a display attached to the Pi (a touchscreen on the
+  cutter), at start-up.
+- `--port N`, `--no-service`, `--uninstall`, `--dry-run` (show what it would do), `--help`.
+
+By hand, on any computer: `openhowi gui --host 0.0.0.0 --password …` (or set `OPENHOWI_PASSWORD`).
 
 The installers are built by GitHub Actions (`.github/workflows/release.yml`) for every version tag:
 `git tag v0.1.0 && git push origin v0.1.0` builds them all, checks each one starts, and publishes the
@@ -74,11 +105,12 @@ install script.
 
 ```bash
 pip install .        # from a checkout; Python 3.11+
-openhowi gui         # opens http://localhost:8765 in your browser
+open-howi            # the app in its own window
+openhowi gui         # or in your browser, at http://localhost:8765
 ```
 
-The app runs locally. The browser is only the window; slicing and the USB connection run in
-the `openhowi` process. It works offline.
+The interface is the same in the app window and in a browser; slicing and the USB connection run in
+the `open_HOWI` / `openhowi` process on your computer. It works offline.
 
 | Tab | What it does |
 |---|---|
@@ -305,9 +337,8 @@ turn the foam for each one):
 `examples/sport_fuselage.howi.json` is a ready-made fuselage with a wing saddle, and
 `examples/fuselage/side.svg` / `top.svg` are the same fuselage as drawings.
 
-**Run it on a Raspberry Pi** at the machine and use it from another computer on your network:
-`openhowi gui --host 0.0.0.0 --no-browser`. Anyone who can reach that address can move the
-machine, so only do this on a network you trust.
+**Run it on a Raspberry Pi** at the machine and use it from other computers on your network: see
+[On a Raspberry Pi next to the machine](#on-a-raspberry-pi-next-to-the-machine).
 
 ## How the cut works
 
@@ -417,7 +448,7 @@ ruff check src tests && ruff format --check src tests
 | `material`, `presets`, `project`, `calibration`, `template` | Slicer layer: presets, kerf model, project slicing, kerf test, servo bay template and fuselage plans |
 | `simulator`, `controller`, `sender` | Simulated GRBL, the threaded device controller, the CLI streamer |
 | `server`, `web/` | Local HTTP API and the browser UI (three.js r179 vendored under `web/vendor`) |
-| `desktop`, `packaging/` | The packaged app's launcher (one copy, in the browser) and the installers |
+| `desktop`, `packaging/` | The app window (pywebview: menu, file dialogs, one copy) and the installers; `packaging/raspberry-pi/install.sh` sets up a Pi |
 
 ## License
 

@@ -37,8 +37,20 @@ jobs:
       - uses: actions/setup-python@v5
         with:
           python-version: "3.12"
+      - name: Linux libraries for the app window (Qt WebEngine) and a virtual screen to test it on
+        if: runner.os == 'Linux'
+        run: |
+          sudo apt-get update -qq
+          sudo apt-get install -y -qq xvfb libegl1 libgl1 libnss3 libxkbcommon0 libxkbcommon-x11-0 libxcomposite1 \
+            libxdamage1 libxrandr2 libgbm1 libxcb-cursor0 libxcb-icccm4 libxcb-image0 libxcb-keysyms1 libxcb-randr0 \
+            libxcb-render-util0 libxcb-shape0 libxcb-xinerama0 libxcb-xkb1 libxtst6 libxshmfence1 libdbus-1-3 \
+            libfontconfig1 libxkbfile1
       - name: Install open_HOWI and PyInstaller
-        run: python -m pip install . "pyinstaller>=6.11,<7"
+        shell: bash
+        run: |
+          extra=""
+          if [ "$RUNNER_OS" = "Linux" ]; then extra="[window]"; fi
+          python -m pip install ".$extra" "pyinstaller>=6.11,<7"
       - name: Version
         id: version
         shell: bash
@@ -50,13 +62,25 @@ jobs:
           echo "version=$version" >> "$GITHUB_OUTPUT"
       - name: Build the app
         run: python -m PyInstaller --noconfirm --clean packaging/open_HOWI.spec
+      - name: Leave out the parts of Qt the window does not use
+        if: runner.os == 'Linux'
+        run: python packaging/linux/prune_qt.py dist/open_HOWI
       - name: Check the app works
         shell: bash
         run: |
-          if [ "$RUNNER_OS" = "macOS" ]; then exe=dist/open_HOWI.app/Contents/MacOS/open_HOWI
-          elif [ "$RUNNER_OS" = "Windows" ]; then exe=dist/open_HOWI/open_HOWI.exe
-          else exe=dist/open_HOWI/open_HOWI; fi
-          python packaging/smoke_test.py "$exe"
+          if [ "$RUNNER_OS" = "macOS" ]; then folder=dist/open_HOWI.app/Contents/MacOS; else folder=dist/open_HOWI; fi
+          if [ "$RUNNER_OS" = "Linux" ]; then
+            xvfb-run -a -s "-screen 0 1600x1000x24" python packaging/smoke_test.py "$folder" --window
+          else
+            python packaging/smoke_test.py "$folder"
+          fi
+      - name: Open the app window (best effort on this runner)
+        if: runner.os != 'Linux'
+        continue-on-error: true
+        shell: bash
+        run: |
+          if [ "$RUNNER_OS" = "macOS" ]; then folder=dist/open_HOWI.app/Contents/MacOS; else folder=dist/open_HOWI; fi
+          python packaging/smoke_test.py "$folder" --window
 
       - name: Windows installer
         if: runner.os == 'Windows'
@@ -79,6 +103,7 @@ jobs:
           mkdir -p "stage/$name" out
           cp -R dist/open_HOWI "stage/$name/"
           cp packaging/linux/install.sh "stage/$name/"
+          cp packaging/linux/README.txt "stage/$name/"
           cp packaging/icon-256.png "stage/$name/open_HOWI.png"
           tar -C stage -czf "out/$name.tar.gz" "$name"
       - uses: actions/upload-artifact@v4
@@ -133,10 +158,10 @@ jobs:
           |---|---|---|
           | Windows 10/11 | `open_HOWI-…-windows-setup.exe` | Run it and follow the steps; start open_HOWI from the Start menu. Windows may warn about an unknown publisher: *More info → Run anyway*. A portable `.zip` is there too. |
           | Mac with Apple silicon | `open_HOWI-…-macos-arm64.dmg` | Open it and drag open_HOWI to Applications. The first time, right-click it and choose *Open* (the app is not signed by Apple). |
-          | Linux (x86-64) | `open_HOWI-…-linux-x86_64.tar.gz` | Unpack it and run `./install.sh`; open_HOWI appears in your applications menu. |
+          | Linux (x86-64) | `open_HOWI-…-linux-x86_64.tar.gz` | Unpack it and run `./install.sh`; open_HOWI appears in your applications menu. (It carries its own web engine, hence the size.) |
           | Anything with Python 3.11+ (Intel Macs, Raspberry Pi, …) | `open_howi-…-py3-none-any.whl` | `pipx install <the .whl file>`, then `open-howi` (or `openhowi gui`). |
 
-          open_HOWI opens in your web browser and runs on your computer only. Close its window (or press *Quit* in the app) to stop it.
+          open_HOWI opens in its own window and runs on your computer only. To run it on a Raspberry Pi next to the machine and use it from other computers, see the README.
           EOF
           gh release create "$GITHUB_REF_NAME" out/* --repo "$GITHUB_REPOSITORY" --title "open_HOWI $GITHUB_REF_NAME" \
             --notes-file notes.md --generate-notes
