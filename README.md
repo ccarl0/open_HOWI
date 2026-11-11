@@ -51,9 +51,18 @@ Download the installer for your computer from the
 
 | Your computer | Download | Then |
 |---|---|---|
-| Windows 10/11 | `open_HOWI-…-windows-setup.exe` | Run it and follow the steps; start open_HOWI from the Start menu. Windows may warn about an unknown publisher: *More info → Run anyway*. (A portable `.zip` is there too.) |
+| Windows 10/11 | `open_HOWI-…-windows-setup.exe` | Run it and follow the steps; start open_HOWI from the Start menu. Windows may warn about an unknown publisher: *More info → Run anyway* (installing with winget, below, avoids that). A portable `.zip` is there too. |
 | Mac with Apple silicon | `open_HOWI-…-macos-arm64.dmg` | Open it and drag open_HOWI to Applications. The first time, right-click it and choose *Open*: the app is not signed by Apple. |
 | Linux (x86-64) | `open_HOWI-…-linux-x86_64.tar.gz` | Unpack it and run `./install.sh`. open_HOWI appears in your applications menu (`./install.sh --uninstall` removes it). It carries its own web engine, hence the size. |
+
+**On Windows, with winget** (the Windows Package Manager, built into Windows 10 and 11), from a terminal:
+
+```
+winget install CarloCecchetti.open_HOWI
+```
+
+It downloads the same installer, checks it against its published fingerprint, and installs without the
+"unknown publisher" warning. `winget upgrade CarloCecchetti.open_HOWI` updates it to the latest version.
 
 open_HOWI opens in **its own window**, with a File / View / Help menu, the system's Open and Save
 dialogs and the usual shortcuts (Ctrl+N, Ctrl+O, Ctrl+S, Ctrl+E; ⌘ on a Mac). It runs only on your
