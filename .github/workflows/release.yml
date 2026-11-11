@@ -100,6 +100,15 @@ jobs:
           $p = Start-Process $setup -Wait -PassThru -ArgumentList "/VERYSILENT", "/SUPPRESSMSGBOXES", "/NORESTART", "/CURRENTUSER", "/DIR=`"$dir`""
           if ($p.ExitCode -ne 0) { throw "the installer failed ($($p.ExitCode))" }
           python packaging/smoke_test.py "$dir" --window
+          # The publisher in the file details and in Apps & features
+          $publisher = "Carlo Cecchetti"
+          foreach ($file in @($setup, (Join-Path $dir "open_HOWI.exe"), (Join-Path $dir "openhowi.exe"))) {
+            $company = (Get-Item $file).VersionInfo.CompanyName
+            if ($company -ne $publisher) { throw "$file names '$company' as its publisher" }
+          }
+          $entry = Get-ItemProperty "HKCU:\Software\Microsoft\Windows\CurrentVersion\Uninstall\{6E3C0F4B-9D5A-4C1E-8F2B-0A7D3E9B6C41}_is1"
+          if ($entry.Publisher -ne $publisher) { throw "Apps & features names '$($entry.Publisher)' as the publisher" }
+          Write-Output "publisher: $publisher (file details and Apps & features)"
       - name: macOS disk image
         if: runner.os == 'macOS'
         run: |

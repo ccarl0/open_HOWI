@@ -4,6 +4,7 @@
 # Builds dist/open_HOWI/ with two programs: open_HOWI (the app, in its own window) and openhowi (the
 # command line); on macOS also dist/open_HOWI.app.
 import importlib.util
+import re
 import sys
 from pathlib import Path
 
@@ -14,6 +15,38 @@ import openhowi
 here = Path(SPECPATH)
 mac = sys.platform == "darwin"
 icon = str(here / ("icon.icns" if mac else "icon.ico"))
+# Shown as the company in the programs' file details on Windows (as in windows/open_HOWI.iss). The
+# "Publisher" in Windows' SmartScreen warning comes only from a code signature.
+PUBLISHER = "Carlo Cecchetti"
+COPYRIGHT = f"Copyright (C) 2026 {PUBLISHER}. GPL-3.0-or-later"
+
+
+def file_details(description, filename):
+    """The Windows version resource: what Properties > Details and Task Manager show."""
+    if sys.platform != "win32":
+        return None
+    from PyInstaller.utils.win32 import versioninfo as v
+
+    numbers = (tuple(int(n) for n in re.findall(r"\d+", openhowi.__version__)[:3]) + (0, 0, 0))[:3] + (0,)
+    strings = {
+        "CompanyName": PUBLISHER,
+        "FileDescription": description,
+        "FileVersion": openhowi.__version__,
+        "InternalName": filename,
+        "LegalCopyright": COPYRIGHT,
+        "OriginalFilename": f"{filename}.exe",
+        "ProductName": "open_HOWI",
+        "ProductVersion": openhowi.__version__,
+    }
+    return v.VSVersionInfo(
+        ffi=v.FixedFileInfo(filevers=numbers, prodvers=numbers),
+        kids=[
+            v.StringFileInfo([v.StringTable("040904B0", [v.StringStruct(k, s) for k, s in strings.items()])]),
+            v.VarFileInfo([v.VarStruct("Translation", [0x0409, 1200])]),
+        ],
+    )
+
+
 ours = collect_submodules("openhowi") + collect_submodules("serial")
 window = []
 if importlib.util.find_spec("webview"):
@@ -41,6 +74,7 @@ app_exe = EXE(
     name="open_HOWI",
     console=False,  # its own window; no console window behind it
     icon=icon,
+    version=file_details("open_HOWI", "open_HOWI"),
 )
 cli_exe = EXE(
     PYZ(cli.pure),
@@ -50,6 +84,7 @@ cli_exe = EXE(
     name="openhowi",
     console=True,
     icon=icon,
+    version=file_details("open_HOWI command line", "openhowi"),
 )
 coll = COLLECT(app_exe, cli_exe, app.binaries, app.datas, cli.binaries, cli.datas, name="open_HOWI")
 if mac:
@@ -64,6 +99,6 @@ if mac:
             "CFBundleDisplayName": "open_HOWI",
             "CFBundleShortVersionString": openhowi.__version__,
             "NSHighResolutionCapable": True,
-            "NSHumanReadableCopyright": "GPL-3.0-or-later",
+            "NSHumanReadableCopyright": COPYRIGHT,
         },
     )
