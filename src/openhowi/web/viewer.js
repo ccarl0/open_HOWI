@@ -209,7 +209,7 @@ export class Viewer {
 
     // Part: each solid is a loft between its root and tip faces (outline and holes), plus end caps
     // With a finished shape to show inside it (a fuselage pass), the part cut by this job is see-through.
-    const ghosted = (r.part.ghosts || []).length > 0;
+    const ghosted = (r.part.ghosts || []).length > 0 || Boolean(r.part.mesh);
     const partMat = new THREE.MeshStandardMaterial({
       color: this.colors.part, roughness: 0.85, side: THREE.DoubleSide, flatShading: r.kind === 'shape',
       ...(ghosted ? { transparent: true, opacity: 0.28, depthWrite: false } : {}),
@@ -227,6 +227,8 @@ export class Viewer {
     // The finished shape (e.g. a fuselage after sanding), faint, lofted through its sections
     const ghostMat = new THREE.MeshStandardMaterial({ color: this.colors.part, roughness: 0.6, side: THREE.DoubleSide });
     for (const rings of r.part.ghosts || []) this.pieces.push({ obj: this.addLoft(rings, ghostMat), role: 'part' });
+    // A 3D model, in place for this cut
+    if (r.part.mesh) this.pieces.push({ obj: this.addMesh(r.part.mesh, ghostMat), role: 'part' });
     // Finished outline (e.g. the sheeted airfoil) around the core, at both faces
     const skinMat = new THREE.LineBasicMaterial({ color: this.colors.frame, transparent: true, opacity: 0.9 });
     for (const skin of r.part.skins || []) {
@@ -347,6 +349,16 @@ export class Viewer {
   }
 
   // A surface through rings of 3D points with the same count.
+  addMesh(mesh, material) {
+    const geom = new THREE.BufferGeometry();
+    geom.setAttribute('position', new THREE.Float32BufferAttribute(mesh.positions, 3));
+    geom.setIndex(mesh.indices);
+    geom.computeVertexNormals();
+    const obj = new THREE.Mesh(geom, material);
+    (this.content || this.partGroup).add(obj);
+    return obj;
+  }
+
   addLoft(rings, material) {
     if (rings.length < 2) return;
     const m = rings[0].length;

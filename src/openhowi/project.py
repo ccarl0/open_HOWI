@@ -7,6 +7,8 @@ either the GUI or the command line (``openhowi slice project.howi.json``).
 
 from __future__ import annotations
 
+import base64
+import binascii
 import copy
 import dataclasses
 import json
@@ -24,6 +26,10 @@ from .gcode import generate_gcode, segments
 from .geometry import Point, bounds, polyline_length, signed_area
 from .machine import Machine
 from .material import Material
+from .mesh import UPS, Mesh, MeshError, cached, cached_mesh
+from .modelcut import ModelOptions, mesh_volume, model_views
+from .modelcut import build_job as build_model_job
+from .modelcut import job_labels as model_job_labels
 from .nest import NestError, NestItem, at, item_paths, nest
 from .planform import PanelCut, Planform, PlanformError
 from .presets import BUILTIN, PresetError, machine_from_values, material_from_values
@@ -403,15 +409,57 @@ NEST_PLACEMENT_FIELDS: list[dict[str, Any]] = [
      "help": "Machine Y of the bottom of the lowest part in each column."},
 ]  # fmt: skip
 
+UP_LABELS = {"+z": "Z axis (most CAD programs)", "+y": "Y axis", "-z": "−Z axis", "-y": "−Y axis",
+             "+x": "X axis", "-x": "−X axis"}  # fmt: skip
+MODEL_FIELDS: list[dict[str, Any]] = [
+    {"key": "source", "label": "3D model", "type": "model", "group": "Model",
+     "help": "An STL file (binary or text), in millimetres."},
+    {"key": "up", "label": "Up is the file's", "type": "select", "group": "Model",
+     "options": [[u, UP_LABELS[u]] for u in UPS]},
+    {"key": "spin", "label": "Turn it", "unit": "°", "type": "select", "group": "Model",
+     "options": [[0, "0°"], [90, "90°"], [180, "180°"], [270, "270°"]],
+     "help": "A quarter turn at a time about the vertical: the model's length runs along the machine's X axis "
+             "and its width along the wire. Check the views below."},
+    {"key": "scale", "label": "Scale", "unit": "%", "type": "number", "min": 0.1, "step": 1, "group": "Model"},
+    {"key": "method", "label": "Cut as", "type": "select", "group": "Cut",
+     "options": [["two_view", "two views: side, then top"], ["slabs", "slabs, glued together"]],
+     "help": "Two views: two cuts, square-ish sections to sand round. Slabs: one cut per slab, following the "
+             "model's shape across the wire as far as the machine can tilt it."},
+    {"key": "thickness", "label": "Slab thickness", "unit": "mm", "type": "number", "min": 2, "step": 5,
+     "group": "Cut", "show_if": {"method": "slabs"},
+     "help": "The thickness of your foam sheets. Thicker slabs follow changes across the wire better; "
+             "thinner ones catch more detail."},
+    {"key": "spare", "label": "Spare foam round it", "unit": "mm", "type": "number", "min": 1, "group": "Cut"},
+    {"key": "detail", "label": "Outline detail", "unit": "mm", "type": "number", "min": 0.05, "max": 10,
+     "step": 0.1, "optional": True, "group": "Advanced",
+     "help": "Size of the grid the model's outlines are traced on. Blank: about 1/600 of the model's length."},
+    {"key": "kerf_root_override", "label": "Kerf override", "unit": "mm", "type": "number", "min": 0,
+     "step": 0.05, "optional": True, "group": "Advanced", "help": "Blank: from the material."},
+]  # fmt: skip
+
+MODEL_PLACEMENT_FIELDS: list[dict[str, Any]] = [
+    {"key": "root_side", "label": "Measure from", "type": "select",
+     "options": [["xy", "the XY carriage"], ["uv", "the UV carriage"]]},
+    {"key": "root_offset", "label": "Distance from that carriage", "unit": "mm", "type": "number", "min": 0,
+     "help": "Two views: where the block starts along the wire. Slabs are cut midway between the carriages, "
+             "where the wire can follow the most change between their faces."},
+    {"key": "x_margin", "label": "Foam rear face X", "unit": "mm", "type": "number", "min": 1,
+     "help": "Machine X of the back of the foam (the side towards X = 0)."},
+    {"key": "y_offset", "label": "Foam underside Y", "unit": "mm", "type": "number", "min": 0,
+     "help": "Machine Y of the underside of the foam, i.e. of the support it rests on."},
+]  # fmt: skip
+
 PART_TYPES = [
     {"type": "wing", "label": "Wing panel"},
     {"type": "shape", "label": "2D shape"},
     {"type": "fuselage", "label": "Fuselage"},
+    {"type": "model", "label": "3D model (STL)"},
     {"type": "nest", "label": "Block of parts"},
 ]
-PART_SCHEMAS = {"wing": PART_FIELDS, "shape": SHAPE_FIELDS, "fuselage": FUSELAGE_FIELDS, "nest": NEST_FIELDS}
+PART_SCHEMAS = {"wing": PART_FIELDS, "shape": SHAPE_FIELDS, "fuselage": FUSELAGE_FIELDS, "model": MODEL_FIELDS,
+                "nest": NEST_FIELDS}  # fmt: skip
 PLACEMENT_SCHEMAS = {"wing": PLACEMENT_FIELDS, "shape": SHAPE_PLACEMENT_FIELDS, "fuselage": FUSELAGE_PLACEMENT_FIELDS,
-                     "nest": NEST_PLACEMENT_FIELDS}  # fmt: skip
+                     "model": MODEL_PLACEMENT_FIELDS, "nest": NEST_PLACEMENT_FIELDS}  # fmt: skip
 DEFAULT_PARTS: dict[str, dict[str, Any]] = {
     "wing": {
         "type": "wing",
@@ -508,11 +556,25 @@ DEFAULT_PARTS["fuselage"] = {
     "kerf_tip_override": None,
 }
 DEFAULT_PARTS["nest"] = {"type": "nest", "items": [], "gap": 8.0, "max_height": None}
+DEFAULT_PARTS["model"] = {
+    "type": "model",
+    "source": None,
+    "up": "+z",
+    "spin": 0,
+    "scale": 100.0,
+    "method": "two_view",
+    "thickness": 30.0,
+    "spare": 5.0,
+    "detail": None,
+    "job": 1,
+    "kerf_root_override": None,
+}
 DEFAULT_PLACEMENTS: dict[str, dict[str, Any]] = {
     "nest": {"root_side": "xy", "root_offset": 200.0, "x_margin": 25.0, "y_offset": 20.0},
     "wing": {"root_side": "xy", "root_offset": 200.0, "x_margin": 25.0, "y_offset": 40.0},
     "shape": {"root_side": "xy", "root_offset": 300.0, "x_margin": 20.0, "y_offset": 20.0},
     "fuselage": {"root_side": "xy", "root_offset": 30.0, "x_margin": 20.0, "y_offset": 10.0},
+    "model": {"root_side": "xy", "root_offset": 100.0, "x_margin": 20.0, "y_offset": 10.0},
 }
 
 
@@ -602,6 +664,8 @@ class _Part:
     solid_z: list[tuple[float, float]] = field(default_factory=list)
     """Root and tip positions of each solid when they differ (nested parts); empty: all at z_root/z_tip."""
     skin_z: list[tuple[float, float]] = field(default_factory=list)
+    mesh: dict[str, Any] | None = None
+    """A 3D model to show faintly in place: {"positions": flat x y z list, "indices": flat triangle list}."""
 
 
 def _r(v: float) -> float:
@@ -666,7 +730,8 @@ def _slice(project: dict[str, Any]) -> SliceResult:
     machine = machine_from_values(machine_values, material)
     placement = _placement(project)
 
-    build = {"wing": _wing_part, "shape": _shape_part, "fuselage": _fuselage_part, "nest": _nest_part}[kind]
+    build = {"wing": _wing_part, "shape": _shape_part, "fuselage": _fuselage_part, "model": _model_part,
+             "nest": _nest_part}[kind]  # fmt: skip
     built = build(part, machine, material, placement)
     return _finish(project, kind, machine, material, placement, built)
 
@@ -1458,7 +1523,7 @@ def _finish(
     kerf_root, kerf_tip = built.kerf
     ratio_root, ratio_tip = built.ratio
     title = str(project.get("title") or {"wing": "Wing panel", "shape": "2D shape", "fuselage": "Fuselage",
-                                         "nest": "Block of parts"}[kind])  # fmt: skip
+                                         "model": "3D model", "nest": "Block of parts"}[kind])  # fmt: skip
     gcode = generate_gcode(
         toolpath,
         machine,
@@ -1515,7 +1580,7 @@ def _finish(
         block = {k: _r(v) for k, v in built.block.items()}
 
     warnings = list(built.warnings)
-    root_name, tip_name = ("larger", "smaller") if kind == "fuselage" else ("root", "tip")
+    root_name, tip_name = {"fuselage": ("larger", "smaller"), "model": ("first", "second")}.get(kind, ("root", "tip"))
     slow_end, slow_ratio = (tip_name, ratio_tip) if ratio_tip < ratio_root else (root_name, ratio_root)
     if slow_ratio < SLOW_END_WARNING:
         warnings.append(
@@ -1573,6 +1638,7 @@ def _finish(
             ],
             "ghosts": [[[[_r(c) for c in p] for p in ring] for ring in ghost] for ghost in built.ghosts],
             "ghost_label": built.ghost_label,
+            "mesh": built.mesh,
         },
         "steps": built.steps,
         "jig": built.jig,
@@ -1800,3 +1866,117 @@ def fuselage_stl(project: dict[str, Any]) -> tuple[str, bytes]:
     fuse, _ = build_fuselage(part)
     title = str(project.get("title") or "Fuselage")
     return f"{title}.stl", stl_binary(fuselage_mesh(fuse), f"open_HOWI {title}")
+
+
+# 3D models ----------------------------------------------------------------------------------
+
+
+def _model_source(part: dict[str, Any]) -> tuple[str, bytes]:
+    source = part.get("source")
+    if not source:
+        raise SliceError("load an STL file for this part")
+    if (
+        not isinstance(source, dict)
+        or not all(isinstance(source.get(k), str) for k in ("name", "format", "data"))
+        or source["format"] != "stl"
+    ):
+        raise SliceError("the 3D model must be an embedded STL file")
+    try:
+        return source["name"], base64.b64decode(source["data"], validate=True)
+    except (ValueError, binascii.Error) as exc:
+        raise SliceError("the 3D model's data is damaged (not base64)") from exc
+
+
+def build_model(part: dict[str, Any]) -> tuple[str, Mesh]:
+    """The part's model, turned the right way up and scaled."""
+    name, data = _model_source(part)
+    up = part.get("up", "+z")
+    spin = _number(part, "spin", 0.0) or 0.0
+    scale = (_number(part, "scale", 100.0) or 100.0) / 100.0
+    try:
+        return name, cached_mesh(data, str(up), spin, scale)
+    except MeshError as exc:
+        raise SliceError(str(exc)) from exc
+
+
+def inspect_model(filename: str, data: str) -> dict[str, Any]:
+    """Summary shown when an STL file is loaded into the app: triangles and size along the file's own axes."""
+    try:
+        mesh = cached_mesh(base64.b64decode(data, validate=True), "+y", 0.0, 1.0)  # +Y up keeps the file's axes
+    except (ValueError, binascii.Error) as exc:
+        raise SliceError(f"{filename}: {exc}") from exc
+    return {
+        "name": filename,
+        "format": "stl",
+        "triangles": len(mesh.triangles),
+        "size": [round(v, 2) for v in mesh.size],
+    }
+
+
+def _model_part(part: dict[str, Any], machine: Machine, material: Material, placement: Placement) -> _Part:
+    name, mesh = build_model(part)
+    try:
+        options = ModelOptions(
+            method=str(part.get("method", "two_view")),
+            spare=_number(part, "spare", 5.0) or 5.0,
+            thickness=_number(part, "thickness", 30.0) or 30.0,
+            detail=_number(part, "detail", None),
+        )
+        labels = model_job_labels(mesh, options)
+        job = min(max(int(_number(part, "job", 1) or 1), 1), len(labels))
+        override = _number(part, "kerf_root_override")
+
+        def kerfs(ratio: tuple[float, float]) -> tuple[float, float]:
+            if override is not None:
+                return override, override
+            return material.kerf_at(ratio[0]), material.kerf_at(ratio[1])
+
+        cut = build_model_job(mesh, options, job - 1, machine, placement, kerfs)
+    except PlacementError:
+        raise
+    except (TypeError, ValueError) as exc:
+        raise SliceError(str(exc)) from exc
+
+    length, height, width = mesh.size
+    coords, faces = cached(mesh, "display")  # type: ignore[misc]
+    (ox, oy, oz), rows = cut.placement
+    positions: list[float] = []
+    for i in range(0, len(coords), 3):
+        x, y, z = coords[i], coords[i + 1], coords[i + 2]
+        positions += [round(o + r[0] * x + r[1] * y + r[2] * z, 1) for o, r in zip((ox, oy, oz), rows)]
+    volume = mesh_volume(mesh)
+    method = {"two_view": "two views", "slabs": f"slabs {options.thickness:g} mm thick"}[options.method]
+    return _Part(
+        toolpath=cut.toolpath,
+        z_root=cut.z_root,
+        z_tip=cut.z_tip,
+        root_regions=cut.root_regions,
+        tip_regions=cut.tip_regions,
+        kerf=cut.kerf,
+        ratio=cut.ratio,
+        comments=[
+            (
+                f"3D model {name}: {length:.0f} x {height:.0f} x {width:.0f} mm, {len(mesh.triangles)} triangles, "
+                f"cut as {method}"
+            ),
+            f"cut {job} of {len(labels)}: {cut.label}",
+        ],
+        warnings=cut.warnings,
+        stats={
+            "model": {
+                "name": name,
+                "size": [round(length, 1), round(height, 1), round(width, 1)],
+                "triangles": len(mesh.triangles),
+                "volume_l": round(volume / 1e6, 2),
+                "method": options.method,
+                "cut": cut.label,
+            }
+        },
+        jobs=labels,
+        job=job,
+        notes=cut.notes,
+        views=model_views(mesh, options) + cut.views,
+        block=cut.block,
+        ghost_label="The model",
+        mesh={"positions": positions, "indices": faces},
+    )

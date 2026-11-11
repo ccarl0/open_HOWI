@@ -52,12 +52,13 @@ from .project import (
     fuselage_plans,
     fuselage_stl,
     inspect_drawing,
+    inspect_model,
     resolve_airfoil,
     slice_project,
 )
 from .toolpath import PlacementError
 
-MAX_BODY = 8 * 1024 * 1024
+MAX_BODY = 64 * 1024 * 1024  # a project can carry a 3D model (STL, as base64)
 NACA_CODES = ["0009", "0012", "0015", "2408", "2410", "2412", "2415", "4412", "4415", "6412"]
 WEB_ROOT = Path(str(resources.files("openhowi") / "web"))
 CSP = (
@@ -102,6 +103,7 @@ class App:
             ("POST", "/api/airfoils"): self.add_airfoil,
             ("POST", "/api/airfoil/shape"): self.airfoil_shape,
             ("POST", "/api/shapes/inspect"): self.inspect_shape,
+            ("POST", "/api/model/inspect"): self.inspect_model,
             ("POST", "/api/slice"): self.slice,
             ("POST", "/api/template/bays"): self.bays_template,
             ("POST", "/api/template/fuselage"): self.fuselage_template,
@@ -209,6 +211,9 @@ class App:
 
     def inspect_shape(self, body: dict[str, Any]) -> dict[str, Any]:
         return inspect_drawing(_str(body, "filename"), _str(body, "data"))
+
+    def inspect_model(self, body: dict[str, Any]) -> dict[str, Any]:
+        return inspect_model(_str(body, "filename"), _str(body, "data"))
 
     def bays_template(self, body: dict[str, Any]) -> dict[str, Any]:
         name, svg = bay_template(body.get("project") or {})
