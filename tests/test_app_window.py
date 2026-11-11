@@ -22,6 +22,10 @@ class FakeWindow:
         self.destroyed = False
 
     def create_file_dialog(self, kind, **kw):
+        from webview.util import parse_file_type
+
+        for file_type in kw.get("file_types", ()):  # pywebview checks them first, as here
+            parse_file_type(file_type)
         self.calls.append((kind, kw))
         return self.answers.pop(0) if self.answers else None
 
@@ -64,6 +68,20 @@ def test_native_file_dialogs(shell, tmp_path):
     assert win.window.calls[2][1]["save_filename"] == "cut.gcode"
     assert api.save_file("f.stl", base64.b64encode(b"solid").decode(), True) == str(tmp_path / "f.stl")
     assert (tmp_path / "f.stl").read_bytes() == b"solid"
+
+
+@pytest.mark.parametrize("kind", sorted(desktop.FILE_TYPES))
+def test_every_file_filter_is_one_pywebview_accepts(kind):
+    util = pytest.importorskip("webview.util")
+    for file_type in desktop.FILE_TYPES[kind]:
+        util.parse_file_type(file_type)  # raises for e.g. "G-code (*.gcode)": the dialog would not open
+
+
+def test_saving_g_code_opens_the_dialog(shell, tmp_path):
+    win, _ = shell
+    win.window.answers = [str(tmp_path / "kerf-test.gcode")]
+    assert desktop.WindowApi(win).save_file("kerf-test.gcode", "G93\n") == str(tmp_path / "kerf-test.gcode")
+    assert "*.gcode" in win.window.calls[0][1]["file_types"][0]
 
 
 def test_closing_while_a_cut_runs_asks_first(shell, monkeypatch):

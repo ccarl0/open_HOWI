@@ -26,11 +26,13 @@ DEFAULT_PORT = 8765
 DOCS_URL = "https://github.com/ccarl0/open_HOWI#readme"
 ISSUES_URL = "https://github.com/ccarl0/open_HOWI/issues"
 
+# The file dialogs' filters. pywebview refuses a description with anything but letters, digits,
+# "_" and spaces in it (no "G-code"): the dialog then fails instead of opening.
 FILE_TYPES: dict[str, tuple[str, ...]] = {
     "project": ("open_HOWI project (*.howi.json;*.json)", "All files (*.*)"),
     "airfoil": ("Airfoil (*.dat;*.txt)", "All files (*.*)"),
     "drawing": ("Drawing (*.svg;*.dxf)", "All files (*.*)"),
-    ".gcode": ("G-code (*.gcode;*.nc)", "All files (*.*)"),
+    ".gcode": ("G code (*.gcode;*.nc)", "All files (*.*)"),
     ".json": ("open_HOWI project (*.howi.json;*.json)",),
     ".svg": ("SVG drawing (*.svg)",),
     ".stl": ("3D model (*.stl)",),
