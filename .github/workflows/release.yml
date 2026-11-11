@@ -163,5 +163,16 @@ jobs:
 
           open_HOWI opens in its own window and runs on your computer only. To run it on a Raspberry Pi next to the machine and use it from other computers, see the README.
           EOF
-          gh release create "$GITHUB_REF_NAME" out/* --repo "$GITHUB_REPOSITORY" --title "open_HOWI $GITHUB_REF_NAME" \
-            --notes-file notes.md --generate-notes
+          # The tag may come from `git push` (no release yet) or from GitHub's "Draft a new release"
+          # page, which publishes the release first: then add the files to it, and the notes if it
+          # has none.
+          tag="$GITHUB_REF_NAME"
+          if body=$(gh release view "$tag" --repo "$GITHUB_REPOSITORY" --json body --jq .body 2>/dev/null); then
+            gh release upload "$tag" out/* --repo "$GITHUB_REPOSITORY" --clobber
+            if [[ -z "${body//[[:space:]]/}" ]]; then
+              gh release edit "$tag" --repo "$GITHUB_REPOSITORY" --notes-file notes.md
+            fi
+          else
+            gh release create "$tag" out/* --repo "$GITHUB_REPOSITORY" --title "open_HOWI $tag" \
+              --notes-file notes.md --generate-notes
+          fi

@@ -98,8 +98,9 @@ By hand, on any computer: `openhowi gui --host 0.0.0.0 --password …` (or set `
 
 The installers are built by GitHub Actions (`.github/workflows/release.yml`) for every version tag:
 `git tag v0.1.0 && git push origin v0.1.0` builds them all, checks each one starts, and publishes the
-release. `packaging/` holds the PyInstaller recipe, the Windows installer script and the Linux
-install script.
+release. Publishing a release with a new tag from GitHub's *Releases → Draft a new release* page works
+too: the files are added to it a few minutes later. `packaging/` holds the PyInstaller recipe, the
+Windows installer script and the Linux install script.
 
 ## The app
 
