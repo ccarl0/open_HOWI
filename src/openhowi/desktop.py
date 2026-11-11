@@ -129,14 +129,15 @@ class WindowApi:
 class AppWindow:
     """The app window round the local server."""
 
-    def __init__(self, server: Any, url: str) -> None:
+    def __init__(self, server: Any, url: str, remember: bool = True) -> None:
         self.server = server
         self.app = server.app
         self.url = url
         self.window: Any = None
         self.quitting = False
+        self.remember = remember  # the window's size and place, from one start to the next
         self.geometry_file = _config_dir() / "window.json"
-        self.geometry = self._load_geometry()
+        self.geometry = self._load_geometry() if remember else {}
 
     def _load_geometry(self) -> dict[str, int]:
         try:
@@ -225,13 +226,16 @@ class AppWindow:
         return False
 
     def _closed(self) -> None:
-        self._save_geometry()
+        if self.remember:
+            self._save_geometry()
         controller = self.app.controller
         if controller.connected:
             controller.disconnect()
         threading.Thread(target=self.server.shutdown, daemon=True).start()
 
-    def run(self) -> None:
+    def run(self, check: Any = None, storage: Path | None = None) -> None:
+        """Open the window and return when it closes; ``check`` runs in a thread once it is open
+        (the self-test), ``storage`` is where the web engine keeps its data."""
         import secrets
 
         import webview
@@ -250,9 +254,16 @@ class AppWindow:
         self.app.window = True
         self.app.quit = lambda: self.quit(False)
         self.app.focus = self.focus
-        storage = _config_dir() / "webview"
-        icon = Path(__file__).parent / "web" / "icon-256.png"
-        webview.start(gui=_gui(), private_mode=False, storage_path=str(storage), icon=str(icon))
+        storage = storage or _config_dir() / "webview"
+        webview.start(check, gui=_gui(), private_mode=False, storage_path=str(storage), icon=_icon())
+
+
+def _icon() -> str | None:
+    """The window's icon. Windows takes it from open_HOWI.exe instead: its icon loader reads only
+    .ico files, and given the PNG it fails and the window never opens."""
+    if sys.platform == "win32":
+        return None
+    return str(Path(__file__).parent / "web" / "icon-256.png")
 
 
 def _gui() -> str | None:
@@ -318,37 +329,34 @@ def self_test(args: list[str]) -> int:
     try:
         from importlib.metadata import version
 
-        import webview
+        import webview  # noqa: F401 - part of the check: the window library loads
 
         try:
             report.append(f"pywebview {version('pywebview')}: ok")
         except Exception:  # noqa: BLE001 - frozen builds may lack the metadata
             report.append("pywebview: ok")
         if "window" in args:
-            import secrets
-
             from .server import local_url, make_server
 
+            # The very window the app opens (menu, icon, bridge, storage), so what stops it shows here
             server = make_server("127.0.0.1", 0)
-            server.app.shell_token = secrets.token_urlsafe(16)
             threading.Thread(target=server.serve_forever, daemon=True).start()
-            url = f"{local_url(server)}?shell={server.app.shell_token}"
-            window = webview.create_window("open_HOWI self-test", url, width=1100, height=760)
+            shell = AppWindow(server, local_url(server), remember=False)
             loaded: dict[str, bool] = {}
 
             def check() -> None:
                 for _ in range(120):
                     try:
-                        if window.evaluate_js("Boolean(document.querySelector('#summary b'))"):
+                        if shell.window.evaluate_js("Boolean(document.querySelector('#summary b'))"):
                             loaded["ok"] = True
                             break
                     except Exception:  # noqa: BLE001, S110 - not ready yet
                         pass
                     time.sleep(0.5)
-                window.destroy()
+                shell.quit()
 
-            webview.start(check, gui=_gui())
-            server.shutdown()
+            with tempfile.TemporaryDirectory(prefix="open_HOWI-self-test-", ignore_cleanup_errors=True) as storage:
+                shell.run(check, storage=Path(storage))
             ok = bool(loaded.get("ok"))
             report.append("window: the app loaded in it" if ok else "window: the app did not load")
     except Exception as exc:  # noqa: BLE001 - report it
@@ -375,7 +383,48 @@ def main(argv: list[str] | None = None) -> int:
             print(f"open_HOWI is already running: opening {url}")
             webbrowser.open(url)
         return 0
-    return run_app()
+    log = _log_to_file()
+    try:
+        return run_app()
+    except Exception as exc:
+        import traceback
+
+        if not log:
+            raise
+        traceback.print_exc()  # into the log, and a message box: there is no console to show it in
+        _alert(f"open_HOWI could not start:\n\n{exc}\n\nThe details are in {log}")
+        return 1
+
+
+def _log_to_file() -> Path | None:
+    """The app without a console (the Windows build: nowhere to print) keeps what it would print, and
+    the web engine's messages, in open_HOWI.log next to its settings. Returns that file."""
+    if sys.stdout is not None and sys.stderr is not None:
+        return None
+    path = _config_dir() / "open_HOWI.log"
+    try:
+        path.parent.mkdir(parents=True, exist_ok=True)
+        stream = open(path, "w", encoding="utf-8", buffering=1)  # noqa: SIM115 - open as long as the app
+    except OSError:
+        return None
+    sys.stdout = sys.stdout or stream
+    sys.stderr = sys.stderr or stream
+    print(f"open_HOWI {_version()} on {sys.platform}, {time.strftime('%Y-%m-%d %H:%M:%S')}")
+    return path
+
+
+def _version() -> str:
+    from . import __version__
+
+    return __version__
+
+
+def _alert(text: str) -> None:
+    """A message box where there is no console (Windows)."""
+    if sys.platform == "win32":
+        import ctypes
+
+        ctypes.windll.user32.MessageBoxW(None, text, "open_HOWI", 0x10)  # MB_ICONERROR
 
 
 if __name__ == "__main__":
